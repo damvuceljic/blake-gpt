@@ -11,10 +11,30 @@ Skills-first repository for monthly TH C&US finance pack intake, extraction, and
    - `data/intake/<period>/<pack_type>/raw/`
 4. Run end-to-end:
    - `python scripts/intake/process_month.py --raw-dir data/intake/<period>/<pack_type>/raw --strict-core`
-5. Run chat-first mode:
-   - `python scripts/chat/blake_mode.py --message "run hot questions for latest pack"`
+5. Run chat-first mode (recommended single entry):
+   - `python scripts/chat/blake_mode.py --message "$th-blake-mode ingest this month's files" --raw-dir data/intake/<period>/<pack_type>/raw --period <period> --pack-type <pack_type> --strict-core`
+6. Ask likely hot questions + prepared answers:
+   - `python scripts/chat/blake_mode.py --message "$th-blake-mode prepare me for hot questions on this pack" --pack-dir data/normalized/<period>/<pack_type>`
 6. Use guided launcher (Windows-first non-technical flow):
    - `python scripts/chat/blake_launcher.py`
+
+## Blake Skill Prefix Rule
+Blake chat requests must begin with a skill token:
+1. `$th-intake-router`
+2. `$th-hot-questions`
+3. `$th-deck-proofing`
+4. `$th-variance-watch`
+5. `$th-blake-mode`
+
+Recommended default for Blake:
+1. Use `$th-blake-mode` for daily workflows.
+2. Use other `$th-*` tokens only for advanced/explicit routing.
+
+## File Type Policy
+1. Accepted intake file types in `raw/`: `.pptx`, `.xlsx`, `.xlsm`, `.xls`
+2. Unsupported files (for example `.pdf`) fail intake with an actionable error.
+3. Persistent non-month artifacts (for example fiscal-year budget files) should be stored in:
+   - `data/context/persistent/<year>-Budget/`
 
 ## Root File Migration
 1. Move root-level Excel/PPT inputs to intake inbox and build routing plan:

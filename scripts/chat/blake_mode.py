@@ -13,11 +13,28 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from finance_copilot.common import ensure_dir, read_json, repo_root, utc_now_iso
-from finance_copilot.intake import is_processed_intake_dir
+from finance_copilot.intake import (
+    is_processed_intake_dir,
+    list_unsupported_intake_files,
+    unsupported_intake_message,
+)
+
+SKILL_TO_INTENT = {
+    "$th-intake-router": "ingest",
+    "$th-hot-questions": "hot_questions",
+    "$th-deck-proofing": "proofing",
+    "$th-variance-watch": "variance_watch",
+    "$th-blake-mode": "router",
+}
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Chat-first workflow router for Blake.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Chat-first workflow router for Blake. Recommended entry point is "
+            "$th-blake-mode <request>."
+        )
+    )
     parser.add_argument("--message", required=True, help="Natural language user request.")
     parser.add_argument("--raw-dir", help="Optional explicit raw intake directory.")
     parser.add_argument("--pack-dir", help="Optional explicit normalized pack directory.")
@@ -103,6 +120,16 @@ def _infer_intent(message: str) -> str:
     return "hot_questions"
 
 
+def _extract_skill_prefix(message: str) -> tuple[str, str]:
+    stripped = message.strip()
+    if not stripped:
+        return "", ""
+    first, _, remainder = stripped.partition(" ")
+    if first.startswith("$"):
+        return first.strip(), remainder.strip()
+    return "", stripped
+
+
 def _write_log(root: Path, pack_dir: Path | None, payload: dict[str, Any]) -> None:
     if pack_dir and len(pack_dir.parts) >= 2:
         period = pack_dir.parts[-2]
@@ -119,7 +146,24 @@ def _write_log(root: Path, pack_dir: Path | None, payload: dict[str, Any]) -> No
 def main() -> int:
     args = parse_args()
     root = repo_root(REPO_ROOT)
-    intent = _infer_intent(args.message)
+    skill_token, routed_message = _extract_skill_prefix(args.message)
+    if not skill_token:
+        print(
+            "Message must start with a skill token. Recommended: "
+            "$th-blake-mode <request>. "
+            "Also supported: $th-intake-router, $th-hot-questions, $th-deck-proofing, $th-variance-watch."
+        )
+        return 2
+    if skill_token not in SKILL_TO_INTENT:
+        print(f"Unsupported skill token: {skill_token}")
+        print("Supported: " + ", ".join(sorted(SKILL_TO_INTENT.keys())))
+        return 2
+
+    if SKILL_TO_INTENT[skill_token] == "router":
+        intent = _infer_intent(routed_message)
+    else:
+        intent = SKILL_TO_INTENT[skill_token]
+
     actions: list[dict[str, Any]] = []
     pack_dir: Path | None = None
 
@@ -136,6 +180,10 @@ def main() -> int:
         if is_processed_intake_dir(raw_dir, root):
             print("Processed intake folders cannot be used as --raw-dir.")
             return 2
+        unsupported = list_unsupported_intake_files(raw_dir)
+        if unsupported:
+            print(f"[intake-error] {unsupported_intake_message(unsupported)}")
+            return 2
         command = [
             sys.executable,
             "scripts/intake/process_month.py",
@@ -146,7 +194,7 @@ def main() -> int:
             "--source-mode",
             args.source_mode,
             "--question",
-            args.message,
+            routed_message or "Process this monthly intake.",
         ]
         if args.strict_core:
             command.append("--strict-core")
@@ -245,7 +293,7 @@ def main() -> int:
             "--pack-dir",
             str(pack_dir),
             "--question",
-            args.message,
+            routed_message or "Prepare me for likely hot questions from deck variances.",
         ]
         if args.use_llm_postprocess:
             command.append("--use-llm-postprocess")
@@ -260,8 +308,10 @@ def main() -> int:
     combined_returncode = 0 if all(action["returncode"] == 0 for action in actions) else 2
     log_payload = {
         "timestamp": utc_now_iso(),
+        "skill": skill_token,
         "intent": intent,
         "message": args.message,
+        "routed_message": routed_message,
         "pack_dir": str(pack_dir) if pack_dir else "",
         "actions": actions,
         "combined_returncode": combined_returncode,

@@ -5,6 +5,9 @@ description: Extract monthly PPTX/XLSX pack files into token-efficient JSON/CSV 
 
 # TH Pack Tokenizer
 
+Primary UX note:
+1. Blake should use `$th-blake-mode` for day-to-day ingestion. This tokenizer skill is advanced/engineering fallback.
+
 1. Ensure a valid manifest exists:
    - `data/packs/<period>/<pack_type>/pack_manifest.json`
 2. Run tokenizer:

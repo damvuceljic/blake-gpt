@@ -9,6 +9,13 @@ Required fields:
 6. `files[]`
 7. `core_validation`
 
+Core validation highlights:
+1. `required_roles`
+2. `missing_roles`
+3. `pairing_issues`
+4. `pair_choice_required_pairs`
+5. `complete_pair_keys`
+
 Required file entry fields:
 1. `role`
 2. `path`

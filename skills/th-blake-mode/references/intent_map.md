@@ -1,5 +1,13 @@
 # Blake Mode Intent Map
 
+Skill-token requirement:
+1. Blake prompts must start with one of:
+   - `$th-intake-router`
+   - `$th-hot-questions`
+   - `$th-deck-proofing`
+   - `$th-variance-watch`
+   - `$th-blake-mode`
+
 Keywords to intent:
 
 1. `ingest`, `intake`, `new files`, `process month` -> `ingest`
@@ -10,4 +18,3 @@ Keywords to intent:
 
 Default fallback:
 1. `hot_questions`
-

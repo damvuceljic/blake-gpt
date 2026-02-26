@@ -33,3 +33,13 @@ Use these repo-local skills when intent matches:
 1. Keep user-facing messages short and useful.
 2. Prioritize material risks and actions.
 3. Avoid long methodological explanations unless asked.
+
+## Blake Interaction Contract
+1. Blake requests must start with an explicit skill token:
+   - `$th-intake-router`
+   - `$th-hot-questions`
+   - `$th-deck-proofing`
+   - `$th-variance-watch`
+   - `$th-blake-mode`
+2. Do not run free-form Blake prompts without a `$` skill prefix.
+3. Preferred daily entry for Blake is `$th-blake-mode`; use other skill tokens only when explicit control is needed.

@@ -87,6 +87,8 @@ def test_analysis_payloads(tmp_path: Path) -> None:
     assert len(hot["dimension_scores"]) == 5
     assert hot["confidence_reason"]
     assert len(hot["summary_bullets"]) >= 1
+    assert len(hot["anticipated_hot_questions"]) >= 1
+    assert hot["follow_up_prompt"] == "Is there any specific questions you'd like help coming up with an answer for?"
     assert proof["issue_count"] >= 0
     assert variance["issue_count"] >= 1
 

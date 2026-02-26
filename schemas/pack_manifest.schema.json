@@ -153,6 +153,12 @@
             "type": "string"
           }
         },
+        "complete_pair_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "status": {
           "type": "string",
           "enum": [

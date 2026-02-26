@@ -6,17 +6,19 @@ description: Chat-first workflow router for Blake. Use when user asks natural-la
 # TH Blake Mode
 
 1. Read `GUARDRAILS.md`.
-2. Route user prompts to one of these intents:
+2. Require Blake prompts to start with a `$` skill token.
+3. Prefer `$th-blake-mode` as Blake's default daily entry point.
+4. Route user prompts to one of these intents:
    - ingest
    - hot questions
    - deck proofing
    - variance watch
    - compare prior month
-3. Use one command:
+5. Use one command:
    - `python scripts/chat/blake_mode.py --message "<user_prompt>"`
    - non-technical launcher: `python scripts/chat/blake_launcher.py`
-4. Return concise executive output only.
-5. Keep detailed command traces in `blake_mode_log.jsonl`.
+6. Return concise executive output only.
+7. Keep detailed command traces in `blake_mode_log.jsonl`.
 
 ## Routing Rules
 1. Prompt contains ingest/intake/new files:

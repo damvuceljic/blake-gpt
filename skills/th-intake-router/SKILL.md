@@ -7,19 +7,22 @@ description: Route new monthly preview/close source files into validated pack ma
 
 1. Confirm files are placed in `data/intake/<period>/<pack_type>/raw/`.
 2. Never use archived inputs in `data/intake/processed/**`.
-2. Run manifest routing:
-   - `python scripts/intake/route_intake.py --raw-dir data/intake/<period>/<pack_type>/raw --strict-core`
-3. Validate manifest:
-   - `python scripts/intake/validate_manifest.py --manifest data/packs/<period>/<pack_type>/pack_manifest.json`
-4. If period/pack inference is wrong, rerun with explicit flags:
+3. Default behavior is full ingest (recommended):
+   - `python skills/th-intake-router/scripts/run_intake.py --raw-dir data/intake/<period>/<pack_type>/raw --period <period> --pack-type <pack_type> --strict-core`
+4. Advanced engineering-only modes:
+   - route only: `--route-only`
+   - tokenize only: `--tokenize-only --manifest <path>`
+   - note: tokenize-only expects manifest source files to still exist in `raw/` (pre-archive)
+5. If period/pack inference is wrong, rerun with explicit flags:
    - `--period`
    - `--pack-type`
    - `--region`
    - `--source-mode`
-5. If multiple offline workbook variants exist for the same pair:
+6. If multiple offline workbook variants exist for the same pair:
    - provide `--pair-choice-file <json>`
-6. If emergency run must proceed despite missing core files:
+7. If emergency run must proceed despite missing core files:
    - set `--allow-missing-core` explicitly
+8. Unsupported files (for example `.pdf`) in raw folder fail intake with an actionable error.
 
 ## Classification Rules
 1. Deck files:

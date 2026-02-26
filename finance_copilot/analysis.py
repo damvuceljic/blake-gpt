@@ -426,6 +426,32 @@ def run_hot_questions(
     if score_band == "Yellow":
         actions.insert(0, "Prioritize top 3 medium/high-risk issues before executive sign-off.")
 
+    anticipated_hot_questions = [
+        {
+            "question": "What are the most likely variance challenges I should expect in leadership review?",
+            "answer": (
+                f"Expect challenge on driver clarity and variance explainability. Current band is {score_band} "
+                f"with variance explainability score {variance_score:.1f}, bridge_sheet_count={bridge_sheet_count}, "
+                f"and formula_cells={formula_cells}."
+            ),
+        },
+        {
+            "question": "How confident are we in the numbers behind the variance narrative?",
+            "answer": (
+                f"Data confidence is {data_confidence_score:.1f} with source_mode={source_mode}, "
+                f"external_formula_cells={external_formula_cells}, and lineage_degraded={lineage_degraded}."
+            ),
+        },
+        {
+            "question": "Where is the commentary most exposed to executive pushback?",
+            "answer": (
+                f"Narrative integrity is {narrative_score:.1f}; {notes_missing}/{total_slides} slides are missing notes, "
+                f"and sign_mismatch_signals={sign_mismatch_signals}."
+            ),
+        },
+    ]
+    follow_up_prompt = "Is there any specific questions you'd like help coming up with an answer for?"
+
     payload = {
         "generated_at": utc_now_iso(),
         "period": _infer_period_from_pack_dir(pack_dir),
@@ -447,6 +473,8 @@ def run_hot_questions(
         "override_notes": override_notes,
         "historical_notes": historical_notes,
         "historical_context_applied": bool(historical_context),
+        "anticipated_hot_questions": anticipated_hot_questions,
+        "follow_up_prompt": follow_up_prompt,
     }
     return payload
 

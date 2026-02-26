@@ -41,6 +41,27 @@ YEAR_MONTH_RE = re.compile(r"^(\d{4})-(\d{2})$")
 OFFLINE_TRAILER_RE = re.compile(r"[-_]?offline(?:[-_].*)?$", re.IGNORECASE)
 
 
+def list_unsupported_intake_files(raw_dir: Path) -> list[Path]:
+    return sorted(
+        [
+            path
+            for path in raw_dir.iterdir()
+            if path.is_file() and path.suffix.lower() not in VALID_EXTENSIONS
+        ]
+    )
+
+
+def unsupported_intake_message(unsupported_files: list[Path]) -> str:
+    accepted = ", ".join(sorted(VALID_EXTENSIONS))
+    names = ", ".join(path.name for path in unsupported_files)
+    return (
+        "Unsupported files found in raw intake folder: "
+        f"{names}. Accepted file types are: {accepted}. "
+        "Next action: convert PDF to PPTX if needed for deck ingestion, or move unsupported files "
+        "to a separate non-ingest folder."
+    )
+
+
 def normalize_period(period: str) -> str:
     candidate = period.strip()
     if PERIOD_RE.fullmatch(candidate):
@@ -287,6 +308,27 @@ def _required_roles(pack_type: str) -> list[str]:
     ]
 
 
+def _complete_core_pair_keys(entries: list[dict[str, Any]], pack_type: str) -> set[str]:
+    formula_role = f"{pack_type}_formula_workbook"
+    offline_role = f"{pack_type}_offline_workbook"
+    formula_keys = {
+        str(entry.get("pair_key", "")).strip()
+        for entry in entries
+        if str(entry.get("role", "")) == formula_role
+        and str(entry.get("pairing_status", "")) == "paired"
+        and str(entry.get("pair_key", "")).strip()
+    }
+    offline_keys = {
+        str(entry.get("pair_key", "")).strip()
+        for entry in entries
+        if str(entry.get("role", "")) == offline_role
+        and str(entry.get("pairing_status", "")) == "paired"
+        and bool(entry.get("offline_primary_selected", False))
+        and str(entry.get("pair_key", "")).strip()
+    }
+    return formula_keys.intersection(offline_keys)
+
+
 def build_pack_manifest(
     *,
     raw_dir: Path,
@@ -299,6 +341,10 @@ def build_pack_manifest(
     allow_missing_core: bool = False,
     pair_choices: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    unsupported = list_unsupported_intake_files(raw_dir)
+    if unsupported:
+        raise ValueError(unsupported_intake_message(unsupported))
+
     files = sorted(
         [path for path in raw_dir.iterdir() if path.is_file() and path.suffix.lower() in VALID_EXTENSIONS]
     )
@@ -346,9 +392,10 @@ def build_pack_manifest(
         role = str(entry.get("role", ""))
         role_counts[role] = role_counts.get(role, 0) + 1
     missing_roles = [role for role in required_roles if role_counts.get(role, 0) == 0]
+    complete_pairs = _complete_core_pair_keys(entries, resolved_pack_type)
 
     core_status = "pass"
-    if strict_core and not allow_missing_core and (missing_roles or pairing["issues"]):
+    if strict_core and not allow_missing_core and (missing_roles or not complete_pairs):
         core_status = "fail"
     elif strict_core and (missing_roles or pairing["issues"]):
         core_status = "warn"
@@ -368,6 +415,7 @@ def build_pack_manifest(
             "missing_roles": missing_roles,
             "pairing_issues": pairing["issues"],
             "pair_choice_required_pairs": pairing["choice_required_pairs"],
+            "complete_pair_keys": sorted(complete_pairs),
             "status": core_status,
         },
     }
@@ -454,8 +502,13 @@ def validate_manifest(
     )
     required_roles = _required_roles(pack_type) if pack_type in VALID_PACK_TYPES else []
     missing_roles = [role for role in required_roles if role_counts.get(role, 0) == 0]
+    complete_pair_keys = _complete_core_pair_keys(files, pack_type) if pack_type in VALID_PACK_TYPES else set()
     if strict_effective and not allow_missing_effective and missing_roles:
         errors.append(f"Strict core validation failed. Missing roles: {', '.join(missing_roles)}")
+    if strict_effective and not allow_missing_effective and not complete_pair_keys:
+        errors.append(
+            f"Strict core validation failed. No complete formula/offline pair for pack_type '{pack_type}'."
+        )
 
     pair_choice_required = [
         str(entry.get("file_name", ""))
@@ -473,7 +526,12 @@ def validate_manifest(
         for entry in files
         if str(entry.get("pairing_status", "")) in {"offline_missing", "formula_missing"}
     ]
-    if pairing_status_failures and strict_effective and not allow_missing_effective:
+    if (
+        pairing_status_failures
+        and strict_effective
+        and not allow_missing_effective
+        and not complete_pair_keys
+    ):
         errors.append(
             "Workbook pair completeness failed for: " + ", ".join(pairing_status_failures)
         )

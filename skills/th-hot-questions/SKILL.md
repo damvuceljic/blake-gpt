@@ -16,6 +16,8 @@ description: Generate concise CFO-level executive briefs from normalized monthly
    - 3-5 key bullets
    - one compact table
    - risks, opportunities, actions
+   - likely hot questions Blake may receive, each with prepared answer
+   - close with: `Is there any specific questions you'd like help coming up with an answer for?`
 4. If confidence is low, provide provisional answer and ask one clarifying question.
 
 ## Required Behaviors

@@ -19,8 +19,23 @@ The pipeline is deterministic first (local extraction and rules), with optional 
    - `data/analysis/<period>/<pack_type>/`
 7. Ask follow-up questions with menu option `Ask hot question`.
 
+## Immediate P2 Runbook (New Files)
+1. Move these two files into `data/intake/2026-P02/preview/raw/`:
+   - `TH CAN AOI Bridges (Preview Template) - P2 2026.xlsx`
+   - `TH CAN AOI Bridges (Preview Template) - P2 2026_Offline.xlsx`
+2. Do not place PDF in intake raw folder:
+   - `TH C&US - 2026 Final Budget Deck.pdf`
+3. Store fiscal-year reference budget workbook in persistent context:
+   - `data/context/persistent/2026-Budget/TH C&US FY LE vs PY.xlsx`
+4. Run one ingest command:
+   - `python skills/th-blake-mode/scripts/run_blake_mode.py --message "$th-blake-mode ingest new P2 preview files" --raw-dir data/intake/2026-P02/preview/raw --period 2026-P02 --pack-type preview --strict-core --use-llm-postprocess --use-historical-context`
+5. Ask for prepared hot-question responses:
+   - `python skills/th-blake-mode/scripts/run_blake_mode.py --message "$th-blake-mode prepare me for hot questions on P2 preview variances" --pack-dir data/normalized/2026-P02/preview --use-llm-postprocess --use-historical-context`
+
 ## Intake Requirements
 Strict core validation is enabled by default.
+Accepted intake file types: `.pptx`, `.xlsx`, `.xlsm`, `.xls`
+Unsupported file types (for example `.pdf`) are blocked with an actionable error.
 
 Required for `preview` packs:
 1. `preview_deck` (`.pptx`)
@@ -42,11 +57,13 @@ All additional Excel files are ingested as `supporting_excel` for drill-down con
 4. The guided launcher can generate this file interactively.
 
 ## Asking New Questions
-1. Guided launcher option: `Ask hot question`.
-2. CLI option:
-   - `python scripts/chat/blake_mode.py --message "What are the top risks this month?"`
-3. Explicit pack targeting:
-   - `python scripts/analyze/hot_questions.py --pack-dir data/normalized/<period>/<pack_type> --question "<your question>"`
+1. Every Blake interaction must start with a `$skill` prefix.
+2. Recommended daily entry is `$th-blake-mode`.
+3. Guided launcher option: `Ask hot question` (launcher sends `$th-hot-questions ...` automatically).
+4. CLI option:
+   - `python scripts/chat/blake_mode.py --message "$th-hot-questions What are the top risks this month?"`
+5. Explicit pack targeting:
+   - `python scripts/chat/blake_mode.py --message "$th-hot-questions Prepare me for likely variance challenges." --pack-dir data/normalized/<period>/<pack_type>`
 
 ## LLM Post-Processing Setup (Codex CLI)
 1. Install dependencies:

@@ -13,7 +13,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from finance_copilot.common import repo_root
-from finance_copilot.intake import build_pack_manifest, is_processed_intake_dir
+from finance_copilot.intake import (
+    build_pack_manifest,
+    is_processed_intake_dir,
+    list_unsupported_intake_files,
+    unsupported_intake_message,
+)
 
 
 def _run(command: list[str], cwd: Path) -> int:
@@ -124,6 +129,10 @@ def _ingest(root: Path) -> None:
     if is_processed_intake_dir(raw_dir, root):
         print("Processed folders cannot be used as raw intake input.")
         return
+    unsupported = list_unsupported_intake_files(raw_dir)
+    if unsupported:
+        print(f"[intake-error] {unsupported_intake_message(unsupported)}")
+        return
 
     period = _prompt("Period (YYYY-PNN)", default=raw_dir.parents[1].name if len(raw_dir.parts) >= 2 else "")
     pack_type = _prompt("Pack type (preview|close)", default=raw_dir.parent.name if raw_dir.parent.name in {"preview", "close"} else "preview")
@@ -139,7 +148,9 @@ def _ingest(root: Path) -> None:
 
     command = [
         sys.executable,
-        "scripts/intake/process_month.py",
+        "scripts/chat/blake_mode.py",
+        "--message",
+        "$th-blake-mode ingest this monthly pack",
         "--raw-dir",
         str(raw_dir),
         "--period",
@@ -155,6 +166,10 @@ def _ingest(root: Path) -> None:
     if use_historical:
         command.append("--use-historical-context")
     _run(command, root)
+    print(
+        "Next question: run 'Ask hot question' or use "
+        "'$th-blake-mode prepare me for hot questions on this pack'."
+    )
 
 
 def _hot_question(root: Path) -> None:
@@ -165,11 +180,12 @@ def _hot_question(root: Path) -> None:
     use_historical = _yes_no("Use historical calibration context", default_yes=True)
     command = [
         sys.executable,
-        "scripts/analyze/hot_questions.py",
+        "scripts/chat/blake_mode.py",
+        "--message",
+        f"$th-blake-mode {question}",
         "--pack-dir",
         str(pack_dir),
-        "--question",
-        question,
+        "--strict-core",
     ]
     if use_llm:
         command.append("--use-llm-postprocess")
@@ -182,7 +198,15 @@ def _proof_deck(root: Path) -> None:
     default_pack = _latest_pack_dir(root)
     pack_dir = _resolve_dir(root, _prompt("Pack dir", default=str(default_pack) if default_pack else "data/normalized/<period>/<pack_type>"))
     use_llm = _yes_no("Use LLM post-processing", default_yes=False)
-    command = [sys.executable, "scripts/analyze/deck_proofing.py", "--pack-dir", str(pack_dir)]
+    command = [
+        sys.executable,
+        "scripts/chat/blake_mode.py",
+        "--message",
+        "$th-blake-mode proof this deck",
+        "--pack-dir",
+        str(pack_dir),
+        "--strict-core",
+    ]
     if use_llm:
         command.append("--use-llm-postprocess")
     _run(command, root)
@@ -192,7 +216,15 @@ def _variance_watch(root: Path) -> None:
     default_pack = _latest_pack_dir(root)
     pack_dir = _resolve_dir(root, _prompt("Pack dir", default=str(default_pack) if default_pack else "data/normalized/<period>/<pack_type>"))
     use_llm = _yes_no("Use LLM post-processing", default_yes=False)
-    command = [sys.executable, "scripts/analyze/variance_watch.py", "--pack-dir", str(pack_dir)]
+    command = [
+        sys.executable,
+        "scripts/chat/blake_mode.py",
+        "--message",
+        "$th-blake-mode run variance watch",
+        "--pack-dir",
+        str(pack_dir),
+        "--strict-core",
+    ]
     if use_llm:
         command.append("--use-llm-postprocess")
     _run(command, root)
@@ -205,9 +237,10 @@ def _compare_prior(root: Path) -> None:
         sys.executable,
         "scripts/chat/blake_mode.py",
         "--message",
-        "compare prior month deck proofing",
+        "$th-blake-mode compare prior month deck proofing",
         "--pack-dir",
         str(pack_dir),
+        "--strict-core",
     ]
     _run(command, root)
 
@@ -224,7 +257,7 @@ def _health_checks(root: Path) -> None:
 
 def _menu() -> None:
     print("\nBlake Guided Launcher")
-    print("1. Ingest month")
+    print("1. Ingest month (full pipeline)")
     print("2. Ask hot question")
     print("3. Proof deck")
     print("4. Run variance watch")

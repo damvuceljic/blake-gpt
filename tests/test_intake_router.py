@@ -6,6 +6,8 @@ from finance_copilot.intake import (
     archive_raw_files,
     build_pack_manifest,
     is_processed_intake_dir,
+    list_unsupported_intake_files,
+    unsupported_intake_message,
     validate_manifest,
 )
 
@@ -107,6 +109,32 @@ def test_manifest_requires_offline_choice_for_variants(tmp_path: Path) -> None:
     assert errors_with_choice == []
 
 
+def test_manifest_allows_extra_unpaired_template_when_core_pair_exists(tmp_path: Path) -> None:
+    raw_dir = tmp_path / "data" / "intake" / "2026-P02" / "preview" / "raw"
+    _touch(raw_dir / "RBI TH C&US Preview Deck - February.pptx")
+    _touch(raw_dir / "TH CA New Preview Template - 2026 Final Load.xlsx")
+    _touch(raw_dir / "TH CA New Preview Template - 2026 Final Load_Offline.xlsx")
+    _touch(raw_dir / "TH CA New Preview Template - 2026.xlsx")
+
+    manifest = build_pack_manifest(
+        raw_dir=raw_dir,
+        root=tmp_path,
+        period="2026-P02",
+        pack_type="preview",
+        region="TH C&US",
+        source_mode="both",
+        strict_core=True,
+        allow_missing_core=False,
+    )
+    errors = validate_manifest(manifest, strict_core=True, allow_missing_core=False)
+    assert errors == []
+    assert (
+        "th-ca-new-preview-template-2026-final-load"
+        in manifest["core_validation"]["complete_pair_keys"]
+    )
+    assert manifest["core_validation"]["status"] == "warn"
+
+
 def test_archive_raw_files(tmp_path: Path) -> None:
     raw_dir = tmp_path / "data" / "intake" / "2026-P01" / "close" / "raw"
     _touch(raw_dir / "TH C&US Close Deck - January.pptx")
@@ -133,3 +161,32 @@ def test_processed_path_detection(tmp_path: Path) -> None:
     processed_dir = tmp_path / "data" / "intake" / "processed" / "2026-P01" / "close" / "raw"
     processed_dir.mkdir(parents=True, exist_ok=True)
     assert is_processed_intake_dir(processed_dir, tmp_path)
+
+
+def test_unsupported_files_block_manifest(tmp_path: Path) -> None:
+    raw_dir = tmp_path / "data" / "intake" / "2026-P02" / "preview" / "raw"
+    _touch(raw_dir / "RBI TH C&US Preview Deck - February.pptx")
+    _touch(raw_dir / "TH CA New Preview Template - 2026.xlsx")
+    _touch(raw_dir / "TH CA New Preview Template - 2026_Offline.xlsx")
+    _touch(raw_dir / "TH C&US - 2026 Final Budget Deck.pdf")
+
+    unsupported = list_unsupported_intake_files(raw_dir)
+    assert len(unsupported) == 1
+    assert unsupported[0].suffix.lower() == ".pdf"
+    message = unsupported_intake_message(unsupported)
+    assert "Unsupported files found in raw intake folder" in message
+    assert ".pptx" in message
+    assert ".xlsx" in message
+
+    try:
+        build_pack_manifest(
+            raw_dir=raw_dir,
+            root=tmp_path,
+            period="2026-P02",
+            pack_type="preview",
+            region="TH C&US",
+            source_mode="both",
+        )
+        assert False, "Expected ValueError for unsupported intake files."
+    except ValueError as exc:
+        assert "Unsupported files found in raw intake folder" in str(exc)

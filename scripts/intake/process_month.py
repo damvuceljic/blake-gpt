@@ -104,17 +104,21 @@ def main() -> int:
             raise ValueError("--pair-choice-file must be a JSON object.")
         pair_choices = {str(key): str(value) for key, value in payload.items()}
 
-    manifest = build_pack_manifest(
-        raw_dir=raw_dir,
-        root=root,
-        period=args.period,
-        pack_type=args.pack_type,
-        region=args.region,
-        source_mode=args.source_mode,
-        strict_core=args.strict_core,
-        allow_missing_core=args.allow_missing_core,
-        pair_choices=pair_choices,
-    )
+    try:
+        manifest = build_pack_manifest(
+            raw_dir=raw_dir,
+            root=root,
+            period=args.period,
+            pack_type=args.pack_type,
+            region=args.region,
+            source_mode=args.source_mode,
+            strict_core=args.strict_core,
+            allow_missing_core=args.allow_missing_core,
+            pair_choices=pair_choices,
+        )
+    except ValueError as exc:
+        print(f"[intake-error] {exc}")
+        return 2
     errors = validate_manifest(
         manifest,
         strict_core=args.strict_core,
@@ -264,6 +268,11 @@ def main() -> int:
     )
     if hot.get("clarifying_question"):
         print(f"Clarifying question: {hot['clarifying_question']}")
+    print(
+        "Next step: ask Blake with "
+        "'$th-blake-mode prepare me for hot questions on this pack' "
+        "to review likely executive challenges and prepared answers."
+    )
     return 0
 
 
