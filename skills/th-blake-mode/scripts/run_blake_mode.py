@@ -14,7 +14,24 @@ def main() -> int:
     parser.add_argument("--period", help="Optional period key")
     parser.add_argument("--pack-type", help="Optional pack type")
     parser.add_argument("--source-mode", default="both", choices=["offline_values", "lineage", "both"])
+    parser.add_argument(
+        "--strict-core",
+        dest="strict_core",
+        action="store_true",
+        default=True,
+        help="Enable strict core intake validation.",
+    )
+    parser.add_argument(
+        "--no-strict-core",
+        dest="strict_core",
+        action="store_false",
+        help="Disable strict core intake validation.",
+    )
+    parser.add_argument("--allow-missing-core", action="store_true")
+    parser.add_argument("--pair-choice-file", help="Optional JSON map for offline pair disambiguation")
     parser.add_argument("--use-llm-postprocess", action="store_true")
+    parser.add_argument("--use-historical-context", action="store_true")
+    parser.add_argument("--historical-context", help="Optional historical calibration bundle path")
     parser.add_argument("--llm-model", help="Optional LLM model override")
     args = parser.parse_args()
 
@@ -27,16 +44,27 @@ def main() -> int:
         "--source-mode",
         args.source_mode,
     ]
+    if args.strict_core:
+        command.append("--strict-core")
+    else:
+        command.append("--no-strict-core")
+    if args.allow_missing_core:
+        command.append("--allow-missing-core")
+    if args.pair_choice_file:
+        command.extend(["--pair-choice-file", args.pair_choice_file])
     for key in ["raw_dir", "pack_dir", "prior_pack_dir", "period", "pack_type", "llm_model"]:
         value = getattr(args, key)
         if value:
             command.extend([f"--{key.replace('_', '-')}", value])
     if args.use_llm_postprocess:
         command.append("--use-llm-postprocess")
+    if args.use_historical_context:
+        command.append("--use-historical-context")
+    if args.historical_context:
+        command.extend(["--historical-context", args.historical_context])
 
     return subprocess.run(command, cwd=repo_root, check=False).returncode
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

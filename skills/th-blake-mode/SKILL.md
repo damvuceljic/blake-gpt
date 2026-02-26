@@ -14,6 +14,7 @@ description: Chat-first workflow router for Blake. Use when user asks natural-la
    - compare prior month
 3. Use one command:
    - `python scripts/chat/blake_mode.py --message "<user_prompt>"`
+   - non-technical launcher: `python scripts/chat/blake_launcher.py`
 4. Return concise executive output only.
 5. Keep detailed command traces in `blake_mode_log.jsonl`.
 
@@ -33,7 +34,8 @@ description: Chat-first workflow router for Blake. Use when user asks natural-la
 1. Use newest populated `data/intake/<period>/<pack_type>/raw` for ingestion if not specified.
 2. Use newest normalized pack in `data/normalized/<period>/<pack_type>` if not specified.
 3. Keep all raw files under `data/intake/.../raw`.
-4. When confidence is low, preserve one clarifying question behavior.
+4. Never use `data/intake/processed/**` as intake input.
+5. When confidence is low, preserve one clarifying question behavior.
 
 ## Helper
 Run:

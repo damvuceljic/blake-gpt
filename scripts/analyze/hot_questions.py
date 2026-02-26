@@ -35,6 +35,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run optional LLM post-processing via codex exec using ChatGPT login.",
     )
+    parser.add_argument(
+        "--use-historical-context",
+        action="store_true",
+        help="Inject historical calibration bundle from data/context/historical/calibration_bundle.json when available.",
+    )
+    parser.add_argument("--historical-context", help="Optional explicit historical calibration bundle path.")
     parser.add_argument("--llm-model", help="Optional model override for codex exec post-processing")
     return parser.parse_args()
 
@@ -70,12 +76,24 @@ def main() -> int:
 
     scoring_config = load_hotq_scoring_config(scoring_path if scoring_path.exists() else None)
     month_override = _load_month_override(root, period)
+    historical_context = None
+    if args.historical_context:
+        historical_path = Path(args.historical_context)
+        if not historical_path.is_absolute():
+            historical_path = (root / historical_path).resolve()
+        if historical_path.exists():
+            historical_context = read_json(historical_path)
+    elif args.use_historical_context:
+        default_historical = root / "data" / "context" / "historical" / "calibration_bundle.json"
+        if default_historical.exists():
+            historical_context = read_json(default_historical)
 
     payload = run_hot_questions(
         pack_dir=pack_dir,
         question=args.question,
         scoring_config=scoring_config,
         month_override=month_override,
+        historical_context=historical_context,
     )
     if args.output:
         output_path = Path(args.output)
@@ -113,4 +131,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

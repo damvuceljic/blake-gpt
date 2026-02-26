@@ -11,6 +11,8 @@ def main() -> int:
     parser.add_argument("--question", help="Optional executive question")
     parser.add_argument("--scoring-config", help="Optional scoring config JSON")
     parser.add_argument("--use-llm-postprocess", action="store_true")
+    parser.add_argument("--use-historical-context", action="store_true")
+    parser.add_argument("--historical-context", help="Optional historical calibration bundle path")
     parser.add_argument("--llm-model", help="Optional model override for Codex post-processing")
     args = parser.parse_args()
 
@@ -22,6 +24,10 @@ def main() -> int:
         command.extend(["--scoring-config", args.scoring_config])
     if args.use_llm_postprocess:
         command.append("--use-llm-postprocess")
+    if args.use_historical_context:
+        command.append("--use-historical-context")
+    if args.historical_context:
+        command.extend(["--historical-context", args.historical_context])
     if args.llm_model:
         command.extend(["--llm-model", args.llm_model])
     return subprocess.run(command, cwd=repo_root, check=False).returncode

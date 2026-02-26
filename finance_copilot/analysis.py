@@ -102,6 +102,13 @@ def _infer_period_from_pack_dir(pack_dir: Path) -> str:
     return "unknown-period"
 
 
+def _infer_pack_type_from_pack_dir(pack_dir: Path) -> str:
+    parts = pack_dir.parts
+    if parts:
+        return parts[-1]
+    return "unknown-pack"
+
+
 def _read_pack_summary(pack_dir: Path) -> dict[str, Any]:
     summary_path = pack_dir / "pack_summary.json"
     if summary_path.exists():
@@ -115,10 +122,12 @@ def run_hot_questions(
     *,
     scoring_config: dict[str, Any] | None = None,
     month_override: dict[str, Any] | None = None,
+    historical_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = load_hotq_scoring_config() if scoring_config is None else scoring_config
     weights = config["weights"]
     penalties = config.get("penalties", {})
+    pack_type = _infer_pack_type_from_pack_dir(pack_dir)
 
     slide_files = _iter_slide_files(pack_dir)
     workbook_meta_files = _iter_workbook_meta(pack_dir)
@@ -294,6 +303,21 @@ def run_hot_questions(
                     override_notes.append(f"{target}:{delta:+.1f} ({reason})")
                     break
 
+    historical_notes: list[str] = []
+    if historical_context:
+        calibrated_deltas = (
+            historical_context.get("calibrated_deltas", {}).get(pack_type, {})
+            if isinstance(historical_context.get("calibrated_deltas"), dict)
+            else {}
+        )
+        for target, raw_delta in calibrated_deltas.items():
+            delta = float(raw_delta)
+            for item in dimension_scores:
+                if item["dimension"] == target:
+                    item["score"] = round(_clamp_score(float(item["score"]) + delta), 2)
+                    historical_notes.append(f"{target}:{delta:+.2f} (historical calibration)")
+                    break
+
     weighted_points = 0.0
     for item in dimension_scores:
         weight = float(item["weight"])
@@ -333,12 +357,37 @@ def run_hot_questions(
     if month_override and month_override.get("force_clarifier"):
         clarifier = str(month_override["force_clarifier"])
 
+    trailing_context: list[str] = []
+    baseline_note = ""
+    if historical_context:
+        score_baseline = (
+            historical_context.get("score_baselines", {}).get(pack_type, {})
+            if isinstance(historical_context.get("score_baselines"), dict)
+            else {}
+        )
+        baseline_mean = score_baseline.get("mean_score_total")
+        if isinstance(baseline_mean, (int, float)):
+            delta_vs_baseline = round(score_total - float(baseline_mean), 2)
+            baseline_note = (
+                f"Historical baseline ({pack_type}): {float(baseline_mean):.1f} "
+                f"(delta {delta_vs_baseline:+.2f})."
+            )
+        trailing_map = historical_context.get("trailing_period_context", {})
+        if isinstance(trailing_map, dict):
+            trailing_values = trailing_map.get(pack_type, [])
+            if isinstance(trailing_values, list):
+                trailing_context = [str(item) for item in trailing_values[:4]]
+
     summary_bullets = [
         f"Scorecard: {score_total:.1f} ({score_band}) | confidence={confidence}.",
         f"Coverage: {total_slides} normalized slides across {total_workbooks} workbook extracts.",
         f"Commentary tone: favorable={favorable_count}, unfavorable={unfavorable_count}, risk_mentions={risk_mentions}.",
         f"Lineage density: formula_cells={formula_cells}, external_links={external_link_count}, external_formula_cells={external_formula_cells}.",
     ]
+    if baseline_note:
+        summary_bullets.append(baseline_note)
+    if trailing_context:
+        summary_bullets.append(f"Trailing context: {' | '.join(trailing_context)}")
     if question:
         summary_bullets.insert(0, f"Question focus: {question}")
 
@@ -385,7 +434,7 @@ def run_hot_questions(
         "score_total": round(score_total, 2),
         "score_band": score_band,
         "dimension_scores": dimension_scores,
-        "summary_bullets": summary_bullets[:5],
+        "summary_bullets": summary_bullets[:6],
         "compact_table": compact_table,
         "risks": (month_override or {}).get("risk_overrides", risks),
         "opportunities": (month_override or {}).get("opportunity_overrides", opportunities),
@@ -396,6 +445,8 @@ def run_hot_questions(
         "lineage_degraded": lineage_degraded,
         "applied_penalties": round(penalty_total, 2),
         "override_notes": override_notes,
+        "historical_notes": historical_notes,
+        "historical_context_applied": bool(historical_context),
     }
     return payload
 
@@ -644,4 +695,3 @@ def run_variance_watch(pack_dir: Path) -> dict[str, Any]:
 
 def persist_analysis(payload: dict[str, Any], output_path: Path) -> None:
     write_json(output_path, payload)
-

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -19,7 +20,12 @@ from finance_copilot.analysis import (
 from finance_copilot.chunks import build_token_chunks
 from finance_copilot.common import ensure_dir, read_json, repo_root, slugify, write_json
 from finance_copilot.deck import extract_deck
-from finance_copilot.intake import build_pack_manifest, validate_manifest
+from finance_copilot.intake import (
+    archive_raw_files,
+    build_pack_manifest,
+    is_processed_intake_dir,
+    validate_manifest,
+)
 from finance_copilot.llm_postprocess import run_llm_postprocess
 from finance_copilot.workbook import extract_workbook
 
@@ -28,9 +34,31 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run monthly end-to-end intake, extraction, and baseline analyses.")
     parser.add_argument("--raw-dir", required=True, help="Raw intake directory with source files.")
     parser.add_argument("--period", help="Reporting period (example: 2026-P02)")
-    parser.add_argument("--pack-type", help="Pack type preview|close")
+    parser.add_argument("--pack-type", choices=["preview", "close"], help="Pack type preview|close")
     parser.add_argument("--region", help="Region label")
     parser.add_argument("--source-mode", default="both", choices=["offline_values", "lineage", "both"])
+    parser.add_argument(
+        "--strict-core",
+        dest="strict_core",
+        action="store_true",
+        default=True,
+        help="Require deck + formula workbook + offline workbook for the selected pack type.",
+    )
+    parser.add_argument(
+        "--no-strict-core",
+        dest="strict_core",
+        action="store_false",
+        help="Disable strict core validation checks.",
+    )
+    parser.add_argument(
+        "--allow-missing-core",
+        action="store_true",
+        help="Allow processing to continue even if strict core checks fail.",
+    )
+    parser.add_argument(
+        "--pair-choice-file",
+        help="JSON object mapping pair_key to selected offline file_name/file_slug.",
+    )
     parser.add_argument("--max-rows", type=int, help="Optional max rows for workbook extraction")
     parser.add_argument("--max-cols", type=int, help="Optional max cols for workbook extraction")
     parser.add_argument("--question", help="Optional Hot Questions focus text")
@@ -43,6 +71,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run optional Codex-CLI post-processing for Hot Questions, Proofing, and Variance.",
     )
+    parser.add_argument(
+        "--use-historical-context",
+        action="store_true",
+        help="Inject historical calibration bundle from data/context/historical/calibration_bundle.json when available.",
+    )
+    parser.add_argument("--historical-context", help="Optional explicit historical calibration bundle path.")
     parser.add_argument("--llm-model", help="Optional model override for codex exec post-processing")
     return parser.parse_args()
 
@@ -53,6 +87,22 @@ def main() -> int:
     raw_dir = Path(args.raw_dir)
     if not raw_dir.is_absolute():
         raw_dir = (root / raw_dir).resolve()
+    if is_processed_intake_dir(raw_dir, root):
+        raise ValueError(
+            f"Processed intake folders are read-protected. Use data/intake/<period>/<pack_type>/raw instead: {raw_dir}"
+        )
+
+    pair_choices: dict[str, str] | None = None
+    if args.pair_choice_file:
+        pair_choice_path = Path(args.pair_choice_file)
+        if not pair_choice_path.is_absolute():
+            pair_choice_path = (root / pair_choice_path).resolve()
+        if not pair_choice_path.exists():
+            raise FileNotFoundError(f"Pair choice file not found: {pair_choice_path}")
+        payload = json.loads(pair_choice_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("--pair-choice-file must be a JSON object.")
+        pair_choices = {str(key): str(value) for key, value in payload.items()}
 
     manifest = build_pack_manifest(
         raw_dir=raw_dir,
@@ -61,8 +111,15 @@ def main() -> int:
         pack_type=args.pack_type,
         region=args.region,
         source_mode=args.source_mode,
+        strict_core=args.strict_core,
+        allow_missing_core=args.allow_missing_core,
+        pair_choices=pair_choices,
     )
-    errors = validate_manifest(manifest)
+    errors = validate_manifest(
+        manifest,
+        strict_core=args.strict_core,
+        allow_missing_core=args.allow_missing_core,
+    )
     if errors:
         for error in errors:
             print(f"[manifest-error] {error}")
@@ -114,12 +171,24 @@ def main() -> int:
     scoring_config = load_hotq_scoring_config(scoring_path if scoring_path.exists() else None)
     month_override_path = root / "data" / "context" / "month_overrides" / f"{manifest['period']}.json"
     month_override = read_json(month_override_path) if month_override_path.exists() else None
+    historical_context = None
+    if args.historical_context:
+        historical_path = Path(args.historical_context)
+        if not historical_path.is_absolute():
+            historical_path = (root / historical_path).resolve()
+        if historical_path.exists():
+            historical_context = read_json(historical_path)
+    elif args.use_historical_context:
+        default_historical = root / "data" / "context" / "historical" / "calibration_bundle.json"
+        if default_historical.exists():
+            historical_context = read_json(default_historical)
 
     hot = run_hot_questions(
         normalized_dir,
         question=args.question,
         scoring_config=scoring_config,
         month_override=month_override,
+        historical_context=historical_context,
     )
     proofing = run_deck_proofing(normalized_dir, prior_pack_dir=None)
     variance = run_variance_watch(normalized_dir)
@@ -176,8 +245,19 @@ def main() -> int:
     persist_analysis(proofing, proof_out)
     persist_analysis(variance, variance_out)
 
+    archive_payload = archive_raw_files(
+        raw_dir=raw_dir,
+        root=root,
+        period=manifest["period"],
+        pack_type=manifest["pack_type"],
+        manifest_files=manifest["files"],
+    )
+    archive_manifest_path = root / archive_payload["archive_dir"] / "archive_manifest.json"
+    write_json(archive_manifest_path, archive_payload)
+
     print(f"Normalized pack complete: {normalized_dir}")
     print(f"Analysis outputs ready: {analysis_dir}")
+    print(f"Raw files archived: {archive_manifest_path}")
     print(
         f"Hot score: {hot.get('score_total')} ({hot.get('score_band')}) | "
         f"Proofing issues: {proofing['issue_count']} | Variance issues: {variance['issue_count']}"

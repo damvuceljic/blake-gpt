@@ -9,14 +9,20 @@
     "region",
     "files",
     "source_mode",
-    "created_at"
+    "created_at",
+    "core_validation"
   ],
   "properties": {
     "period": {
-      "type": "string"
+      "type": "string",
+      "pattern": "^\\d{4}-P\\d{2}$"
     },
     "pack_type": {
-      "type": "string"
+      "type": "string",
+      "enum": [
+        "preview",
+        "close"
+      ]
     },
     "region": {
       "type": "string"
@@ -44,7 +50,12 @@
           "role",
           "path",
           "checksum",
-          "size_bytes"
+          "size_bytes",
+          "pair_key",
+          "value_mode",
+          "is_core_required",
+          "pairing_status",
+          "offline_primary_selected"
         ],
         "properties": {
           "role": {
@@ -52,8 +63,10 @@
             "enum": [
               "preview_deck",
               "close_deck",
-              "preview_excel",
-              "close_excel",
+              "preview_formula_workbook",
+              "preview_offline_workbook",
+              "close_formula_workbook",
+              "close_offline_workbook",
               "supporting_excel"
             ]
           },
@@ -72,12 +85,85 @@
           },
           "file_slug": {
             "type": "string"
+          },
+          "pair_key": {
+            "type": "string"
+          },
+          "value_mode": {
+            "type": "string",
+            "enum": [
+              "deck",
+              "lineage_formula",
+              "offline_values",
+              "supporting_excel"
+            ]
+          },
+          "is_core_required": {
+            "type": "boolean"
+          },
+          "pairing_status": {
+            "type": "string"
+          },
+          "offline_primary_selected": {
+            "type": "boolean"
           }
         },
         "additionalProperties": true
       }
+    },
+    "core_validation": {
+      "type": "object",
+      "required": [
+        "strict_core",
+        "allow_missing_core",
+        "required_roles",
+        "missing_roles",
+        "pairing_issues",
+        "pair_choice_required_pairs",
+        "status"
+      ],
+      "properties": {
+        "strict_core": {
+          "type": "boolean"
+        },
+        "allow_missing_core": {
+          "type": "boolean"
+        },
+        "required_roles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing_roles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pairing_issues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pair_choice_required_pairs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "warn",
+            "fail"
+          ]
+        }
+      },
+      "additionalProperties": true
     }
   },
   "additionalProperties": true
 }
-

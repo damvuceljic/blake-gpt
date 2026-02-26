@@ -62,7 +62,7 @@ def main() -> int:
             out_dir = normalized_dir / "decks" / stem_slug
             extract_deck(input_path=src_path, output_dir=out_dir)
             extraction_log.append({"role": role, "source": file_entry["path"], "output": str(out_dir.relative_to(root).as_posix())})
-        elif role.endswith("_excel") or role == "supporting_excel":
+        elif role.endswith("_excel") or role.endswith("_workbook") or role == "supporting_excel":
             out_dir = normalized_dir / "workbooks" / stem_slug
             extract_workbook(
                 input_path=src_path,
@@ -98,4 +98,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

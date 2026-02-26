@@ -11,6 +11,7 @@ description: Generate concise CFO-level executive briefs from normalized monthly
    - `python scripts/analyze/hot_questions.py --pack-dir data/normalized/<period>/<pack_type> --question "<question>"`
    - optional scoring config: `--scoring-config data/context/hot_questions_scoring.default.json`
    - optional postprocess: `--use-llm-postprocess`
+   - optional historical calibration: `--use-historical-context` or `--historical-context <path>`
 3. Return default executive format:
    - 3-5 key bullets
    - one compact table

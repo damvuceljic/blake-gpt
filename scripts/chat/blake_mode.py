@@ -13,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from finance_copilot.common import ensure_dir, read_json, repo_root, utc_now_iso
+from finance_copilot.intake import is_processed_intake_dir
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,10 +23,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pack-dir", help="Optional explicit normalized pack directory.")
     parser.add_argument("--prior-pack-dir", help="Optional prior pack for compare/proofing workflows.")
     parser.add_argument("--period", help="Optional period for ingestion routing.")
-    parser.add_argument("--pack-type", help="Optional pack type for ingestion routing.")
+    parser.add_argument("--pack-type", choices=["preview", "close"], help="Optional pack type for ingestion routing.")
     parser.add_argument("--region", default="TH C&US", help="Region label for ingestion workflow.")
     parser.add_argument("--source-mode", default="both", choices=["offline_values", "lineage", "both"])
+    parser.add_argument(
+        "--strict-core",
+        dest="strict_core",
+        action="store_true",
+        default=True,
+        help="Enforce strict core intake requirements.",
+    )
+    parser.add_argument(
+        "--no-strict-core",
+        dest="strict_core",
+        action="store_false",
+        help="Disable strict core requirements.",
+    )
+    parser.add_argument("--allow-missing-core", action="store_true")
+    parser.add_argument("--pair-choice-file", help="JSON mapping pair_key to selected offline workbook.")
     parser.add_argument("--use-llm-postprocess", action="store_true")
+    parser.add_argument("--use-historical-context", action="store_true")
+    parser.add_argument("--historical-context", help="Optional explicit historical calibration bundle path.")
     parser.add_argument("--llm-model", help="Optional model override for LLM post-processing.")
     return parser.parse_args()
 
@@ -115,6 +133,9 @@ def main() -> int:
                 print("No raw intake folder with files found. Provide --raw-dir.")
                 return 2
             raw_dir = raw_candidates[0]
+        if is_processed_intake_dir(raw_dir, root):
+            print("Processed intake folders cannot be used as --raw-dir.")
+            return 2
         command = [
             sys.executable,
             "scripts/intake/process_month.py",
@@ -127,12 +148,24 @@ def main() -> int:
             "--question",
             args.message,
         ]
+        if args.strict_core:
+            command.append("--strict-core")
+        else:
+            command.append("--no-strict-core")
+        if args.allow_missing_core:
+            command.append("--allow-missing-core")
+        if args.pair_choice_file:
+            command.extend(["--pair-choice-file", args.pair_choice_file])
         if args.period:
             command.extend(["--period", args.period])
         if args.pack_type:
             command.extend(["--pack-type", args.pack_type])
         if args.use_llm_postprocess:
             command.append("--use-llm-postprocess")
+        if args.use_historical_context:
+            command.append("--use-historical-context")
+        if args.historical_context:
+            command.extend(["--historical-context", args.historical_context])
         if args.llm_model:
             command.extend(["--llm-model", args.llm_model])
         result = _run_command(command, root)
@@ -216,6 +249,10 @@ def main() -> int:
         ]
         if args.use_llm_postprocess:
             command.append("--use-llm-postprocess")
+        if args.use_historical_context:
+            command.append("--use-historical-context")
+        if args.historical_context:
+            command.extend(["--historical-context", args.historical_context])
         if args.llm_model:
             command.extend(["--llm-model", args.llm_model])
         actions.append(_run_command(command, root))
@@ -243,4 +280,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
