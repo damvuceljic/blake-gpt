@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deck_extract.schema.json",
+  "title": "Deck Extract Package",
+  "type": "object",
+  "required": [
+    "deck_meta",
+    "slide_chart_map",
+    "boilerplate_filter_report"
+  ],
+  "properties": {
+    "deck_meta": {
+      "type": "object",
+      "required": [
+        "source_file",
+        "slide_count",
+        "chart_count",
+        "notes_count",
+        "extracted_at"
+      ],
+      "properties": {
+        "source_file": {
+          "type": "string"
+        },
+        "slide_count": {
+          "type": "integer"
+        },
+        "chart_count": {
+          "type": "integer"
+        },
+        "notes_count": {
+          "type": "integer"
+        },
+        "extracted_at": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "slide_chart_map": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "slide_number",
+          "chart_ids"
+        ],
+        "properties": {
+          "slide_number": {
+            "type": "integer"
+          },
+          "chart_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "boilerplate_filter_report": {
+      "type": "object",
+      "required": [
+        "boilerplate_text_items",
+        "boilerplate_count"
+      ],
+      "properties": {
+        "boilerplate_text_items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "boilerplate_count": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
+

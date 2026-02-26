@@ -1,0 +1,21 @@
+Review the finance deck for executive circulation risk.
+
+Check:
+1. Mismatches between commentary and numbers/charts.
+2. Outdated or rolled-forward commentary.
+3. Missing page numbers, disclaimers, or incomplete slides.
+4. Consistency of definitions, FX rates, and reporting periods.
+5. GAAP/IFRS and non-GAAP labeling quality.
+
+Output:
+- Structured issues log with columns:
+  - Location (slide number and reference path)
+  - Issue Type (Mismatch / Outdated / Missing / Consistency / Clarity)
+  - Description
+  - Severity (High / Medium / Low)
+  - Recommended Fix
+  - Evidence Reference(s)
+
+Tone:
+- Concise, factual, CFO-ready.
+

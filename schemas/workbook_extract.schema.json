@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "workbook_extract.schema.json",
+  "title": "Workbook Extract Package",
+  "type": "object",
+  "required": [
+    "workbook_meta",
+    "external_links",
+    "lineage_flags"
+  ],
+  "properties": {
+    "workbook_meta": {
+      "type": "object",
+      "required": [
+        "source_file",
+        "sheet_count",
+        "sheet_names",
+        "sheets",
+        "extracted_at"
+      ],
+      "properties": {
+        "source_file": {
+          "type": "string"
+        },
+        "sheet_count": {
+          "type": "integer"
+        },
+        "sheet_names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sheets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "sheet_name",
+              "sheet_slug",
+              "max_row",
+              "max_col",
+              "formula_cells",
+              "external_formula_cells",
+              "values_csv",
+              "formula_cells_csv",
+              "named_ranges_json"
+            ],
+            "properties": {
+              "sheet_name": {
+                "type": "string"
+              },
+              "sheet_slug": {
+                "type": "string"
+              },
+              "max_row": {
+                "type": "integer"
+              },
+              "max_col": {
+                "type": "integer"
+              },
+              "formula_cells": {
+                "type": "integer"
+              },
+              "external_formula_cells": {
+                "type": "integer"
+              },
+              "values_csv": {
+                "type": "string"
+              },
+              "formula_cells_csv": {
+                "type": "string"
+              },
+              "named_ranges_json": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "extracted_at": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "external_links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "relationship_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "lineage_flags": {
+      "type": "object",
+      "required": [
+        "has_external_links",
+        "external_link_count",
+        "formula_cells_total",
+        "external_formula_cells_total"
+      ],
+      "properties": {
+        "has_external_links": {
+          "type": "boolean"
+        },
+        "external_link_count": {
+          "type": "integer"
+        },
+        "formula_cells_total": {
+          "type": "integer"
+        },
+        "external_formula_cells_total": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
+

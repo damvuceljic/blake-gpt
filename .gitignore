@@ -1,0 +1,34 @@
+# Python caches
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+
+# Editor
+.vscode/
+
+# Local envs
+.venv/
+venv/
+.env
+
+# Large/source financial binaries
+*.pptx
+*.PPTX
+*.xlsx
+*.XLSX
+*.xlsm
+*.xls
+
+# Generated data artifacts
+data/intake/**
+data/packs/**
+data/normalized/**
+data/analysis/**
+!data/intake/.gitkeep
+!data/packs/.gitkeep
+!data/normalized/.gitkeep
+!data/analysis/.gitkeep
+!data/context/.gitkeep
+!data/context/month_overrides/.gitkeep

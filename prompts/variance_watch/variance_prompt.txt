@@ -1,0 +1,22 @@
+Review this P&L model and variance bridges for reconciliation quality.
+
+Validate:
+1. Variance drivers (price, volume, mix, FX, one-offs) tie to total variance.
+2. Bridge integrity: each step is mathematically correct and ties to headline variance.
+3. Period consistency: YTD/QTD/FY comparisons are not mixed incorrectly.
+4. FX treatment: plan-rate versus actual-rate handling is explicit and consistent.
+5. Outdated assumptions: detect stale text and copied-forward commentary.
+6. Completeness: detect missing commentary, placeholders, or unfinished schedules.
+
+Output:
+- Structured issues log with:
+  - Sheet / Tab + row/range where possible
+  - Issue Type (Mismatch / Outdated / Missing / Consistency / Clarity)
+  - Description
+  - Severity (High / Medium / Low)
+  - Recommended Fix
+  - Evidence Reference(s)
+
+Tone:
+- Focus on materiality and actionability.
+

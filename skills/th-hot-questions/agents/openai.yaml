@@ -1,0 +1,4 @@
+interface:
+  display_name: "TH Hot Questions"
+  short_description: "Answer executive hot questions from pack data"
+  default_prompt: "Generate an executive brief with insights, risks, opportunities, and actions from latest normalized pack."

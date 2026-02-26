@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hot_questions_scoring.schema.json",
+  "title": "Hot Questions Scoring Configuration",
+  "type": "object",
+  "required": [
+    "weights",
+    "thresholds",
+    "materiality",
+    "penalties"
+  ],
+  "properties": {
+    "weights": {
+      "type": "object",
+      "required": [
+        "pnl_delivery",
+        "variance_explainability",
+        "forecast_reliability",
+        "narrative_integrity",
+        "data_confidence"
+      ],
+      "properties": {
+        "pnl_delivery": { "type": "number", "minimum": 0 },
+        "variance_explainability": { "type": "number", "minimum": 0 },
+        "forecast_reliability": { "type": "number", "minimum": 0 },
+        "narrative_integrity": { "type": "number", "minimum": 0 },
+        "data_confidence": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "thresholds": {
+      "type": "object",
+      "required": [
+        "green_min",
+        "yellow_min"
+      ],
+      "properties": {
+        "green_min": { "type": "number", "minimum": 0, "maximum": 100 },
+        "yellow_min": { "type": "number", "minimum": 0, "maximum": 100 }
+      },
+      "additionalProperties": false
+    },
+    "materiality": {
+      "type": "object",
+      "required": [
+        "currency_mm",
+        "percent"
+      ],
+      "properties": {
+        "currency_mm": { "type": "number", "minimum": 0 },
+        "percent": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "penalties": {
+      "type": "object",
+      "required": [
+        "lineage_degraded",
+        "notes_missing_ratio_high",
+        "missing_pack_components"
+      ],
+      "properties": {
+        "lineage_degraded": { "type": "number", "minimum": 0 },
+        "notes_missing_ratio_high": { "type": "number", "minimum": 0 },
+        "missing_pack_components": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
+

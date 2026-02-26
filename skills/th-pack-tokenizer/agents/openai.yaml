@@ -1,0 +1,4 @@
+interface:
+  display_name: "TH Pack Tokenizer"
+  short_description: "Tokenize PPTX and XLSX into compact artifacts"
+  default_prompt: "Extract deck and workbook files into normalized JSON/CSV artifacts with lineage metadata."

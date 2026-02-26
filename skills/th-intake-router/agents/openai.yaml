@@ -1,0 +1,4 @@
+interface:
+  display_name: "TH Intake Router"
+  short_description: "Route monthly finance files into pack manifests"
+  default_prompt: "Classify new preview/close files and build a validated pack_manifest.json for extraction."

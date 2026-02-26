@@ -1,0 +1,4 @@
+interface:
+  display_name: "TH Variance Watch"
+  short_description: "Validate variance bridges and driver integrity"
+  default_prompt: "Produce a structured variance issue log with severity and recommended fixes."

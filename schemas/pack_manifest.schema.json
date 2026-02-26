@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pack_manifest.schema.json",
+  "title": "Pack Manifest",
+  "type": "object",
+  "required": [
+    "period",
+    "pack_type",
+    "region",
+    "files",
+    "source_mode",
+    "created_at"
+  ],
+  "properties": {
+    "period": {
+      "type": "string"
+    },
+    "pack_type": {
+      "type": "string"
+    },
+    "region": {
+      "type": "string"
+    },
+    "source_mode": {
+      "type": "string",
+      "enum": [
+        "offline_values",
+        "lineage",
+        "both"
+      ]
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "raw_dir": {
+      "type": "string"
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "role",
+          "path",
+          "checksum",
+          "size_bytes"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "preview_deck",
+              "close_deck",
+              "preview_excel",
+              "close_excel",
+              "supporting_excel"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "checksum": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "file_name": {
+            "type": "string"
+          },
+          "file_slug": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
+

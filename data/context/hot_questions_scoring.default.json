@@ -1,0 +1,23 @@
+{
+  "weights": {
+    "pnl_delivery": 30,
+    "variance_explainability": 25,
+    "forecast_reliability": 20,
+    "narrative_integrity": 15,
+    "data_confidence": 10
+  },
+  "thresholds": {
+    "green_min": 80,
+    "yellow_min": 65
+  },
+  "materiality": {
+    "currency_mm": 0.5,
+    "percent": 1.0
+  },
+  "penalties": {
+    "lineage_degraded": 10,
+    "notes_missing_ratio_high": 8,
+    "missing_pack_components": 25
+  }
+}
+

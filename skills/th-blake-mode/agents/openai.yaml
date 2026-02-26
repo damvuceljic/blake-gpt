@@ -1,0 +1,4 @@
+interface:
+  display_name: "TH Blake Mode"
+  short_description: "Chat-first router for monthly workflows"
+  default_prompt: "Route Blake requests to intake, hot questions, proofing, variance watch, and month-over-month compare flows."

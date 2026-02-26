@@ -1,0 +1,4 @@
+interface:
+  display_name: "TH Deck Proofing"
+  short_description: "Audit deck commentary, numbers, and labeling"
+  default_prompt: "Produce a structured proofing issue log for mismatches, stale commentary, and compliance risks."
