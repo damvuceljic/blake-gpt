@@ -24,7 +24,8 @@ description: Chat-first workflow router for Blake. Use when user asks natural-la
 1. Prompt contains ingest/intake/new files:
    - run end-to-end monthly processing (`process_month.py`).
 2. Prompt contains hot questions/top risks/executive brief:
-   - run `scripts/analyze/hot_questions.py`.
+   - run `scripts/analyze/hot_questions.py` in challenge-card mode:
+   - `--challenge-card-mode --strict-narrative --require-llm-attempt --use-llm-postprocess`
 3. Prompt contains proof/proofing/review deck:
    - run `scripts/analyze/deck_proofing.py`.
 4. Prompt contains variance/bridge/reconcile:
@@ -38,6 +39,10 @@ description: Chat-first workflow router for Blake. Use when user asks natural-la
 3. Keep all raw files under `data/intake/.../raw`.
 4. Never use `data/intake/processed/**` as intake input.
 5. When confidence is low, preserve one clarifying question behavior.
+6. For hot questions, enforce nuance checks:
+   - at least one narrative evidence ref per non-watchout card
+   - no bridge-only causal claims
+   - explicit downgrade warning when LLM explainer is unavailable
 
 ## Helper
 Run:

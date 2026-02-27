@@ -3,6 +3,7 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
+from finance_copilot.common import read_json
 from finance_copilot.deck import extract_deck
 
 
@@ -46,3 +47,8 @@ def test_extract_deck_basic(tmp_path: Path) -> None:
     assert (output_dir / "slides" / "slide_001.json").exists()
     assert (output_dir / "slide_chart_map.json").exists()
 
+    slide = read_json(output_dir / "slides" / "slide_001.json")
+    assert "text_blocks" in slide
+    assert isinstance(slide["text_blocks"], list)
+    assert slide["text_blocks"]
+    assert slide["text_blocks"][0]["block_class"] in {"narrative", "table_like", "bridge_summary", "footer"}

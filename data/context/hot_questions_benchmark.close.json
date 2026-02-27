@@ -1,0 +1,13 @@
+{
+  "periods": ["2025-P12", "2025-P11", "2026-P01"],
+  "pack_type": "close",
+  "thresholds": {
+    "min_average": 18.0,
+    "min_dimension": 3.0
+  },
+  "notes": [
+    "Acceptance requires average score >= 18/25.",
+    "No dimension average can be below 3/5.",
+    "Hard checks must pass for narrative evidence, basis coverage, and no bridge-only causal claims."
+  ]
+}

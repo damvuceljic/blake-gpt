@@ -18,3 +18,8 @@ Keywords to intent:
 
 Default fallback:
 1. `hot_questions`
+
+Hot-questions execution defaults:
+1. Challenge-card mode (`--challenge-card-mode`)
+2. Strict narrative gate (`--strict-narrative`)
+3. Required LLM attempt with deterministic fallback (`--require-llm-attempt --use-llm-postprocess`)

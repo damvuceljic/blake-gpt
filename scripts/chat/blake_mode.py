@@ -295,8 +295,9 @@ def main() -> int:
             "--question",
             routed_message or "Prepare me for likely hot questions from deck variances.",
         ]
-        if args.use_llm_postprocess:
-            command.append("--use-llm-postprocess")
+        # Hot-question workflows enforce challenge-card + strict narrative mode with required LLM attempt.
+        command.extend(["--challenge-card-mode", "--strict-narrative", "--require-llm-attempt"])
+        command.append("--use-llm-postprocess")
         if args.use_historical_context:
             command.append("--use-historical-context")
         if args.historical_context:

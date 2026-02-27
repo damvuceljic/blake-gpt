@@ -25,6 +25,118 @@ DEFAULT_HOTQ_SCORING_CONFIG: dict[str, Any] = {
     },
 }
 
+VARIANCE_QUESTION_PROMPT_VERSION = "variance_challenge_v1"
+VARIANCE_QUESTION_PROMPT = (
+    "Generate executive hot questions from tokenized workbook evidence.\n"
+    "Rules:\n"
+    "1. Every question must cite a named metric and at least one numeric delta.\n"
+    "2. Use period bases explicitly: MoM, QoQ, YoY (or vs Budget).\n"
+    "3. Prefer P&L and operating levers (Sales, AOI, EBITDA, SSS%, SST%).\n"
+    "4. Ask for driver split, one-time vs structural mix, and next-month carryover.\n"
+    "5. Include one concise prepared answer with the same metric deltas.\n"
+    "6. Do not output generic questions without numbers."
+)
+
+VARIANCE_METRIC_SPECS: dict[str, dict[str, str]] = {
+    "Total Sales": {"unit": "mm", "driver_focus": "traffic, ticket/mix, and calendar timing"},
+    "AOI": {"unit": "mm", "driver_focus": "gross margin, labor, and controllable spend"},
+    "Total EBITDA": {"unit": "mm", "driver_focus": "flow-through from sales plus fixed cost absorption"},
+    "Franchise AOI": {"unit": "mm", "driver_focus": "royalty base, bad debt, and franchise fee timing"},
+    "Property AOI": {"unit": "mm", "driver_focus": "rent, occupancy, and property-level cost mix"},
+    "G&A AOI": {"unit": "mm", "driver_focus": "corporate cost timing and run-rate discipline"},
+    "SSS%": {"unit": "pct", "driver_focus": "transactions versus check and promo mix"},
+    "SST%": {"unit": "pct", "driver_focus": "traffic trend versus seasonality and competitive pressure"},
+}
+
+METRIC_KEYWORDS: dict[str, list[str]] = {
+    "Total Sales": ["sales", "system sales", "total sales", "comp", "sss", "sst", "traffic", "ticket", "mix"],
+    "AOI": ["aoi", "operating income", "margin", "flow-through", "pricing", "food", "paper", "labor"],
+    "Total EBITDA": ["ebitda", "adjusted ebitda", "flow-through", "margin", "overhead", "g&a"],
+    "Franchise AOI": ["franchise", "royalty", "fee", "bad debt", "successor", "franchise aoi"],
+    "Property AOI": ["property", "rent", "occupancy", "utilities", "maintenance", "property aoi"],
+    "G&A AOI": ["g&a", "corporate", "overhead", "incentive", "professional fees", "travel"],
+    "SSS%": ["sss", "same store sales", "comps", "comp sales", "mix", "ticket"],
+    "SST%": ["sst", "traffic", "transactions", "guest count", "frequency"],
+}
+
+SUPPLEMENTARY_SIGNAL_TOKENS = [
+    "variance",
+    "var",
+    "budget",
+    "le",
+    "plan",
+    "actual",
+    "driver",
+    "bridge",
+    "commentary",
+    "headwind",
+    "tailwind",
+]
+
+SUPPLEMENTARY_SHEET_PRIORITIES = [
+    "summary",
+    "bridge",
+    "check",
+    "act x ple",
+    "traffic",
+    "sales",
+    "aoi",
+    "ebitda",
+]
+
+NARRATIVE_CUE_TOKENS = [
+    "what worked",
+    "didn't work",
+    "drivers and impacts",
+    "driven by",
+    "due to",
+    "because",
+    "headwind",
+    "tailwind",
+    "traffic softness",
+    "calendar initiatives",
+    "weather",
+    "timing",
+    "consumer spending",
+    "mix",
+    "pricing",
+    "labor",
+    "commodity",
+    "promotion",
+    "promo",
+]
+NUMERIC_RE = re.compile(r"\(?-?\$?\d[\d,]*(?:\.\d+)?%?\)?")
+
+BRIDGE_CUE_TOKENS = [
+    "bridge",
+    "variance to budget",
+    "variance to le",
+    "vs budget",
+    "vs le",
+    "vs py",
+]
+
+FOOTER_CUE_TOKENS = [
+    "confidential and proprietary information of restaurant brands international",
+    "source:",
+]
+
+REGION_TOKEN_MAP: dict[str, list[str]] = {
+    "Canada": ["th can", "th canada", "canada", "ca "],
+    "US": ["th us", " us ", "united states"],
+    "C&US": ["c&us", "th c&us", "th c & us"],
+}
+VARIANCE_DRIVER_LEXICON: dict[str, list[str]] = {
+    "traffic": ["traffic", "transactions", "guest count", "sst"],
+    "check_mix": ["check", "mix", "ticket", "sss", "promo", "promotion"],
+    "pricing": ["pricing", "price", "menu", "inflation"],
+    "labor": ["labor", "wage", "staffing", "hours"],
+    "commodity": ["commodity", "food", "paper", "cost of sales"],
+    "media": ["media", "advertising", "digital", "campaign"],
+    "weather": ["weather", "storm", "temperature"],
+    "calendar": ["calendar", "timing", "one-time", "lap", "holiday"],
+}
+
 
 @dataclass
 class Issue:
@@ -114,6 +226,985 @@ def _read_pack_summary(pack_dir: Path) -> dict[str, Any]:
     if summary_path.exists():
         return read_json(summary_path)
     return {}
+
+
+def _parse_numeric_cell(value: str) -> float | None:
+    cell = str(value).strip()
+    if not cell or cell.startswith("="):
+        return None
+    try:
+        return float(cell)
+    except ValueError:
+        return None
+
+
+def _shift_period(period: str, delta: int) -> str | None:
+    match = re.fullmatch(r"(\d{4})-P(\d{2})", period)
+    if not match:
+        return None
+    year = int(match.group(1))
+    month = int(match.group(2))
+    month += delta
+    while month <= 0:
+        year -= 1
+        month += 12
+    while month > 12:
+        year += 1
+        month -= 12
+    return f"{year}-P{month:02d}"
+
+
+def _repo_root_from_pack_dir(pack_dir: Path) -> Path | None:
+    for ancestor in [pack_dir, *pack_dir.parents]:
+        if ancestor.name == "normalized" and ancestor.parent.name == "data":
+            return ancestor.parent.parent
+    return None
+
+
+def _pick_variance_sheet_csv(pack_dir: Path) -> tuple[Path | None, str]:
+    workbooks_dir = pack_dir / "workbooks"
+    if not workbooks_dir.exists():
+        return None, ""
+
+    candidates: list[tuple[int, Path, str]] = []
+    for workbook_dir in sorted([path for path in workbooks_dir.iterdir() if path.is_dir()]):
+        name = workbook_dir.name.lower()
+        priority = 0
+        if "offline" in name:
+            priority += 30
+        if "close-template" in name or "preview-template" in name:
+            priority += 20
+        if "aoi-version" in name:
+            priority += 10
+        for sheet_slug in ["thca-p-l-aoi", "thca-p-l-summary"]:
+            values_csv = workbook_dir / "sheets" / sheet_slug / "values.csv"
+            if values_csv.exists():
+                evidence_ref = str(values_csv.relative_to(pack_dir).as_posix())
+                candidates.append((priority, values_csv, evidence_ref))
+
+    if not candidates:
+        return None, ""
+    chosen = sorted(candidates, key=lambda item: item[0], reverse=True)[0]
+    return chosen[1], chosen[2]
+
+
+def _load_metric_snapshot(pack_dir: Path) -> tuple[dict[str, dict[str, Any]], str]:
+    values_csv, evidence_ref = _pick_variance_sheet_csv(pack_dir)
+    if values_csv is None:
+        return {}, ""
+
+    with values_csv.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+
+    if len(rows) < 2:
+        return {}, evidence_ref
+
+    data_rows = rows[1:]
+    base_idx: int | None = None
+    header_row_idx: int | None = None
+    for idx, row in enumerate(data_rows):
+        lower = [str(cell).strip().lower() for cell in row]
+        if "prior year" in lower and "actual" in lower and "budget" in lower:
+            try:
+                base_idx = lower.index("prior year")
+                if base_idx + 3 < len(row):
+                    header_row_idx = idx
+                    break
+            except ValueError:
+                continue
+
+    if base_idx is None or header_row_idx is None or base_idx <= 0:
+        return {}, evidence_ref
+
+    snapshot: dict[str, dict[str, Any]] = {}
+    for row in data_rows[header_row_idx + 1 :]:
+        if len(row) <= base_idx + 3:
+            continue
+        metric_label = str(row[base_idx - 1]).strip()
+        if metric_label not in VARIANCE_METRIC_SPECS:
+            continue
+        snapshot[metric_label] = {
+            "row_number": str(row[0]).strip(),
+            "prior_year": _parse_numeric_cell(row[base_idx]),
+            "actual": _parse_numeric_cell(row[base_idx + 1]),
+            "le": _parse_numeric_cell(row[base_idx + 2]),
+            "budget": _parse_numeric_cell(row[base_idx + 3]),
+            "evidence_ref": evidence_ref,
+        }
+    return snapshot, evidence_ref
+
+
+def _format_signed_mm(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:+.1f}MM"
+
+
+def _format_pct(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value * 100:.2f}%"
+
+
+def _format_signed_pp(delta: float | None) -> str:
+    if delta is None:
+        return "n/a"
+    return f"{delta * 100:+.2f}pp"
+
+
+def _format_signed_pct(delta: float | None) -> str:
+    if delta is None:
+        return "n/a"
+    return f"{delta:+.1f}%"
+
+
+def _safe_percent_delta(current: float | None, baseline: float | None) -> float | None:
+    if current is None or baseline is None or abs(baseline) < 1e-9:
+        return None
+    return (current - baseline) / abs(baseline) * 100.0
+
+
+def _load_manifest_roles(pack_dir: Path) -> dict[str, str]:
+    manifest_path = pack_dir / "pack_manifest.json"
+    if not manifest_path.exists():
+        return {}
+    manifest = read_json(manifest_path)
+    role_map: dict[str, str] = {}
+    for item in manifest.get("files", []):
+        slug = str(item.get("file_slug", "")).strip()
+        role = str(item.get("role", "")).strip()
+        if slug and role:
+            role_map[slug] = role
+    return role_map
+
+
+def _sheet_priority(sheet_name: str) -> int:
+    lowered = sheet_name.lower()
+    score = 0
+    for index, token in enumerate(SUPPLEMENTARY_SHEET_PRIORITIES):
+        if token in lowered:
+            score += 20 - index
+    return score
+
+
+def _format_numeric_for_snippet(value: float) -> str:
+    if abs(value) >= 1000:
+        return f"{value:,.0f}"
+    if abs(value) >= 10:
+        return f"{value:.1f}"
+    return f"{value:.3f}"
+
+
+def _collect_supplementary_evidence(
+    pack_dir: Path, ranked_candidates: list[dict[str, Any]]
+) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
+    workbooks_dir = pack_dir / "workbooks"
+    if not workbooks_dir.exists():
+        return {}, []
+
+    role_map = _load_manifest_roles(pack_dir)
+    primary_sheet_csv, _ = _pick_variance_sheet_csv(pack_dir)
+    primary_workbook = primary_sheet_csv.parents[2].name if primary_sheet_csv else ""
+
+    metric_targets = [str(item.get("metric", "")) for item in ranked_candidates[:6] if item.get("metric")]
+    if not metric_targets:
+        return {}, []
+
+    snippets_by_metric: dict[str, list[dict[str, Any]]] = {metric: [] for metric in metric_targets}
+    evidence_refs: list[str] = []
+
+    workbook_dirs = sorted([path for path in workbooks_dir.iterdir() if path.is_dir()])
+    for workbook_dir in workbook_dirs:
+        workbook_slug = workbook_dir.name
+        role = role_map.get(workbook_slug, "")
+        if workbook_slug == primary_workbook:
+            continue
+        if role and role != "supporting_excel":
+            continue
+
+        meta_path = workbook_dir / "workbook_meta.json"
+        if not meta_path.exists():
+            continue
+        meta = read_json(meta_path)
+        sheets = sorted(
+            meta.get("sheets", []),
+            key=lambda item: _sheet_priority(str(item.get("sheet_name", ""))),
+            reverse=True,
+        )
+        for sheet in sheets:
+            values_csv_rel = str(sheet.get("values_csv", ""))
+            if not values_csv_rel:
+                continue
+            values_csv = workbook_dir / values_csv_rel
+            if not values_csv.exists():
+                continue
+
+            sheet_name = str(sheet.get("sheet_name", ""))
+            row_limit = 2500
+            if _sheet_priority(sheet_name) == 0:
+                row_limit = 600
+            metric_hits = 0
+            with values_csv.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.reader(handle)
+                next(reader, None)
+                for row_idx, row in enumerate(reader, start=1):
+                    if row_idx > row_limit:
+                        break
+                    row_text_parts = [str(cell).strip() for cell in row[1:] if str(cell).strip()]
+                    if not row_text_parts:
+                        continue
+                    joined = " ".join(row_text_parts).lower()
+                    numeric_values = [
+                        value
+                        for value in (_parse_numeric_cell(cell) for cell in row[1:])
+                        if value is not None
+                    ]
+                    if not numeric_values:
+                        continue
+
+                    signal_hits = sum(1 for token in SUPPLEMENTARY_SIGNAL_TOKENS if token in joined)
+                    if signal_hits == 0:
+                        continue
+
+                    for metric in metric_targets:
+                        if len(snippets_by_metric[metric]) >= 4:
+                            continue
+                        keyword_hits = sum(1 for token in METRIC_KEYWORDS.get(metric, []) if token in joined)
+                        if keyword_hits == 0:
+                            continue
+                        score = keyword_hits * 3 + signal_hits
+                        text_excerpt = " | ".join(row_text_parts[:6])[:220]
+                        snippet = {
+                            "metric": metric,
+                            "workbook_slug": workbook_slug,
+                            "sheet_name": sheet_name,
+                            "row_number": str(row[0]).strip() if row else str(row_idx),
+                            "matched_keywords": [token for token in METRIC_KEYWORDS.get(metric, []) if token in joined][:4],
+                            "numeric_values": [_format_numeric_for_snippet(value) for value in numeric_values[:4]],
+                            "snippet_text": text_excerpt,
+                            "score": score,
+                            "evidence_ref": str(values_csv.relative_to(pack_dir).as_posix()),
+                        }
+                        snippets_by_metric[metric].append(snippet)
+                        evidence_refs.append(snippet["evidence_ref"])
+                        metric_hits += 1
+                    if metric_hits >= 8:
+                        break
+
+    for metric in metric_targets:
+        snippets_by_metric[metric] = sorted(
+            snippets_by_metric[metric], key=lambda item: float(item.get("score", 0)), reverse=True
+        )[:3]
+    deduped_evidence_refs = sorted(set(evidence_refs))
+    return snippets_by_metric, deduped_evidence_refs
+
+
+def _compute_le_change_flags(
+    current_snapshot: dict[str, dict[str, Any]],
+    previous_snapshot: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    flags: list[dict[str, Any]] = []
+    for metric, spec in VARIANCE_METRIC_SPECS.items():
+        current = current_snapshot.get(metric, {})
+        previous = previous_snapshot.get(metric, {})
+        current_le_raw = current.get("le")
+        previous_le_raw = previous.get("le")
+        current_le = (
+            float(current_le_raw)
+            if isinstance(current_le_raw, (int, float)) and abs(float(current_le_raw)) > 1e-9
+            else None
+        )
+        previous_le = (
+            float(previous_le_raw)
+            if isinstance(previous_le_raw, (int, float)) and abs(float(previous_le_raw)) > 1e-9
+            else None
+        )
+        if current_le is None and previous_le is not None:
+            flags.append(
+                {
+                    "metric": metric,
+                    "current_le": current_le_raw,
+                    "previous_le": previous_le_raw,
+                    "le_change": None,
+                    "le_change_pct": None,
+                    "status": "missing_current_period_le",
+                }
+            )
+            continue
+        if current_le is None or previous_le is None:
+            continue
+        delta = float(current_le) - float(previous_le)
+        if spec["unit"] == "pct":
+            material = abs(delta) >= 0.005
+        else:
+            material = abs(delta) >= 1.0
+        if not material:
+            continue
+        flags.append(
+            {
+                "metric": metric,
+                "current_le": current_le,
+                "previous_le": previous_le,
+                "le_change": delta,
+                "le_change_pct": _safe_percent_delta(current_le, previous_le)
+                if spec["unit"] == "mm"
+                else None,
+                "status": "favorable" if delta >= 0 else "unfavorable",
+            }
+        )
+    return flags
+
+
+def _format_basis_delta(item: dict[str, Any], *, basis: str, unit: str) -> str:
+    value = item.get(basis)
+    if unit == "pct":
+        return _format_signed_pp(value)
+    return _format_signed_mm(value)
+
+
+def _basis_phrase(item: dict[str, Any], *, basis: str, unit: str) -> str:
+    label = "vs Budget" if basis == "vs_budget" else "vs LE"
+    value = item.get(basis)
+    if value is None:
+        if basis == "vs_le":
+            return "LE not populated"
+        return f"n/a {label}"
+    return f"{_format_basis_delta(item, basis=basis, unit=unit)} {label}"
+
+
+def _region_from_text(text: str) -> str:
+    lowered = text.lower()
+    if any(token in lowered for token in REGION_TOKEN_MAP["C&US"]):
+        return "C&US"
+    has_canada = any(token in lowered for token in REGION_TOKEN_MAP["Canada"])
+    has_us = any(token in lowered for token in REGION_TOKEN_MAP["US"])
+    if has_canada and has_us:
+        return "C&US"
+    if has_canada:
+        return "Canada"
+    if has_us:
+        return "US"
+    return "C&US"
+
+
+def _infer_narrative_block_class(text: str, numeric_density: float, line_count: int) -> str:
+    lowered = text.lower()
+    if any(token in lowered for token in FOOTER_CUE_TOKENS):
+        return "footer"
+    if any(token in lowered for token in BRIDGE_CUE_TOKENS):
+        return "bridge_summary"
+    if numeric_density >= 1.3 or (line_count >= 10 and numeric_density > 0.6):
+        return "table_like"
+    if any(token in lowered for token in NARRATIVE_CUE_TOKENS):
+        return "narrative"
+    if len(lowered) >= 120 and numeric_density < 0.8:
+        return "narrative"
+    return "table_like"
+
+
+def _narrative_score(text: str, numeric_density: float, block_class: str) -> float:
+    lowered = text.lower()
+    cue_hits = sum(1 for token in NARRATIVE_CUE_TOKENS if token in lowered)
+    bridge_hits = sum(1 for token in BRIDGE_CUE_TOKENS if token in lowered)
+    base = cue_hits * 2.2 - bridge_hits * 1.5 - numeric_density * 1.2
+    if block_class == "narrative":
+        base += 3.0
+    if block_class == "footer":
+        base -= 5.0
+    return round(base, 3)
+
+
+def _collect_narrative_blocks(pack_dir: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    class_counts = {"narrative": 0, "bridge_summary": 0, "table_like": 0, "footer": 0}
+    region_counts = {"C&US": 0, "Canada": 0, "US": 0}
+    for slide_path in _iter_slide_files(pack_dir):
+        slide = read_json(slide_path)
+        slide_number = int(slide.get("slide_number", 0) or 0)
+        slide_title = str(slide.get("title", "")).strip()
+        evidence_ref = str(slide_path.relative_to(pack_dir).as_posix())
+        block_list = slide.get("text_blocks")
+        normalized_blocks: list[dict[str, Any]] = []
+        if isinstance(block_list, list) and block_list:
+            for block in block_list:
+                lines = [str(item).strip() for item in block.get("lines", []) if str(item).strip()]
+                if not lines:
+                    continue
+                joined = " ".join(lines)
+                numeric_density = float(block.get("numeric_density", 0.0))
+                block_class = str(block.get("block_class", "")).strip() or _infer_narrative_block_class(
+                    joined, numeric_density=numeric_density, line_count=len(lines)
+                )
+                signal_score = float(block.get("narrative_signal_score", _narrative_score(joined, numeric_density, block_class)))
+                normalized_blocks.append(
+                    {
+                        "block_index": int(block.get("block_index", len(normalized_blocks) + 1)),
+                        "lines": lines,
+                        "text": joined,
+                        "char_count": int(block.get("char_count", len(joined))),
+                        "numeric_density": numeric_density,
+                        "block_class": block_class,
+                        "narrative_signal_score": signal_score,
+                    }
+                )
+        if not normalized_blocks:
+            fallback_lines = [slide_title, *[str(item) for item in slide.get("body", [])], str(slide.get("note_text", ""))]
+            fallback_lines = [line.strip() for line in fallback_lines if line and str(line).strip()]
+            if fallback_lines:
+                joined = " ".join(fallback_lines)
+                numeric_mentions = len(NUMERIC_RE.findall(joined))
+                numeric_density = numeric_mentions / max(1, len(fallback_lines))
+                block_class = _infer_narrative_block_class(joined, numeric_density=numeric_density, line_count=len(fallback_lines))
+                normalized_blocks.append(
+                    {
+                        "block_index": 1,
+                        "lines": fallback_lines,
+                        "text": joined,
+                        "char_count": len(joined),
+                        "numeric_density": numeric_density,
+                        "block_class": block_class,
+                        "narrative_signal_score": _narrative_score(joined, numeric_density, block_class),
+                    }
+                )
+
+        for block in normalized_blocks:
+            text = str(block["text"])
+            region = _region_from_text(f"{slide_title} {text}")
+            class_counts[block["block_class"]] = class_counts.get(block["block_class"], 0) + 1
+            region_counts[region] = region_counts.get(region, 0) + 1
+            blocks.append(
+                {
+                    "slide_number": slide_number,
+                    "slide_title": slide_title,
+                    "evidence_ref": evidence_ref,
+                    "region": region,
+                    **block,
+                }
+            )
+
+    summary = {
+        "total_blocks": len(blocks),
+        "class_counts": class_counts,
+        "region_counts": region_counts,
+        "narrative_blocks": sum(1 for block in blocks if block.get("block_class") == "narrative"),
+    }
+    return blocks, summary
+
+
+def _metric_narrative_matches(metric: str, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    keywords = METRIC_KEYWORDS.get(metric, [])
+    driver_tokens = [token for tokens in VARIANCE_DRIVER_LEXICON.values() for token in tokens]
+    matches: list[dict[str, Any]] = []
+    for block in blocks:
+        text = str(block.get("text", "")).lower()
+        keyword_hits = [token for token in keywords if token in text]
+        driver_hits = [token for token in driver_tokens if token in text]
+        if not keyword_hits and not driver_hits:
+            continue
+        slide_title = str(block.get("slide_title", "")).lower()
+        score = float(block.get("narrative_signal_score", 0.0)) + len(keyword_hits) * 2.0 + len(driver_hits) * 1.5
+        if any(token in slide_title for token in ("what worked", "didn't work", "drivers and impacts")):
+            score += 6.0
+        if "bridge" in slide_title:
+            score -= 4.0
+        block_class = str(block.get("block_class", ""))
+        if block_class == "narrative":
+            score += 3.0
+        elif block_class == "bridge_summary":
+            score -= 3.0
+        elif block_class == "table_like":
+            score -= 1.0
+        matches.append(
+            {
+                "evidence_ref": str(block.get("evidence_ref", "")),
+                "slide_number": int(block.get("slide_number", 0)),
+                "slide_title": str(block.get("slide_title", "")),
+                "region": str(block.get("region", "C&US")),
+                "block_class": block_class,
+                "snippet": " | ".join(block.get("lines", [])[:3])[:280],
+                "matched_driver_tokens": sorted(set(driver_hits))[:6],
+                "score": round(score, 3),
+            }
+        )
+    return sorted(matches, key=lambda item: float(item.get("score", 0.0)), reverse=True)
+
+
+def _format_basis_summary(item: dict[str, Any], unit: str) -> dict[str, str]:
+    if unit == "pct":
+        return {
+            "vs_budget": _format_signed_pp(item.get("vs_budget")),
+            "vs_le": _format_signed_pp(item.get("vs_le")) if item.get("vs_le") is not None else "LE not populated",
+            "mom": _format_signed_pp(item.get("mom_delta")),
+            "qoq": _format_signed_pp(item.get("qoq_delta")),
+            "yoy": _format_signed_pp(item.get("vs_py")),
+        }
+    return {
+        "vs_budget": _format_signed_mm(item.get("vs_budget")),
+        "vs_le": _format_signed_mm(item.get("vs_le")) if item.get("vs_le") is not None else "LE not populated",
+        "mom": _format_signed_mm(item.get("mom_delta")),
+        "qoq": _format_signed_mm(item.get("qoq_delta")),
+        "yoy": _format_signed_mm(item.get("vs_py")),
+    }
+
+
+def _ensure_basis_presence(summary: dict[str, str]) -> bool:
+    budget = summary.get("vs_budget", "").lower()
+    le = summary.get("vs_le", "").lower()
+    has_budget = budget not in {"", "n/a", "n/a vs budget"}
+    has_le = le not in {"", "n/a", "le not populated"}
+    return has_budget or has_le
+
+
+def _build_quality_gate(challenge_cards: list[dict[str, Any]]) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    if not challenge_cards:
+        return {
+            "status": "fail",
+            "checks": [
+                {
+                    "check": "challenge_cards_present",
+                    "status": "fail",
+                    "message": "No challenge cards were generated from the available pack evidence.",
+                }
+            ],
+        }
+
+    missing_narrative = [
+        card.get("metric", "")
+        for card in challenge_cards
+        if card.get("card_type") != "le_watchout" and not card.get("narrative_evidence_refs")
+    ]
+    checks.append(
+        {
+            "check": "narrative_evidence_per_card",
+            "status": "pass" if not missing_narrative else "fail",
+            "message": "All non-watchout cards include narrative evidence."
+            if not missing_narrative
+            else f"Missing narrative evidence for: {', '.join(missing_narrative)}",
+        }
+    )
+
+    missing_basis = [
+        card.get("metric", "")
+        for card in challenge_cards
+        if card.get("card_type") != "le_watchout" and not _ensure_basis_presence(card.get("basis_summary", {}))
+    ]
+    checks.append(
+        {
+            "check": "basis_delta_presence",
+            "status": "pass" if not missing_basis else "fail",
+            "message": "All non-watchout cards include Budget/LE basis deltas."
+            if not missing_basis
+            else f"Missing basis deltas for: {', '.join(missing_basis)}",
+        }
+    )
+
+    bridge_only = [
+        card.get("metric", "")
+        for card in challenge_cards
+        if card.get("card_type") != "le_watchout"
+        and card.get("narrative_block_classes")
+        and all(cls in {"bridge_summary", "table_like"} for cls in card.get("narrative_block_classes", []))
+    ]
+    checks.append(
+        {
+            "check": "no_bridge_only_causal_claim",
+            "status": "pass" if not bridge_only else "fail",
+            "message": "No cards rely only on bridge/table blocks for causal narrative."
+            if not bridge_only
+            else f"Bridge-only causal support detected for: {', '.join(bridge_only)}",
+        }
+    )
+
+    failed = [check for check in checks if check["status"] == "fail"]
+    status = "pass"
+    if failed:
+        status = "downgraded_narrative_gap"
+    if len(failed) >= 2:
+        status = "fail"
+    return {"status": status, "checks": checks}
+
+
+def _primary_basis(item: dict[str, Any], unit: str) -> tuple[str, str]:
+    priority = "vs_budget"
+    if item.get("vs_le") is not None and abs(float(item.get("vs_le") or 0.0)) >= abs(float(item.get("vs_budget") or 0.0)):
+        priority = "vs_le"
+    secondary = "vs_le" if priority == "vs_budget" else "vs_budget"
+    return _basis_phrase(item, basis=priority, unit=unit), _basis_phrase(item, basis=secondary, unit=unit)
+
+
+def _build_challenge_card(
+    *,
+    item: dict[str, Any],
+    period: str,
+    region: str,
+    narrative_matches: list[dict[str, Any]],
+    supplementary_snippets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    metric = str(item["metric"])
+    unit = str(item["unit"])
+    primary_basis, secondary_basis = _primary_basis(item, unit)
+    basis_summary = _format_basis_summary(item, unit)
+    narrative_refs = [str(match.get("evidence_ref", "")) for match in narrative_matches if match.get("evidence_ref")]
+    narrative_classes = [str(match.get("block_class", "")) for match in narrative_matches if match.get("block_class")]
+    supplementary_refs = [str(snippet.get("evidence_ref", "")) for snippet in supplementary_snippets if snippet.get("evidence_ref")]
+
+    mom = _format_signed_pp(item.get("mom_delta")) if unit == "pct" else _format_signed_mm(item.get("mom_delta"))
+    qoq = _format_signed_pp(item.get("qoq_delta")) if unit == "pct" else _format_signed_mm(item.get("qoq_delta"))
+    yoy = _format_signed_pp(item.get("vs_py")) if unit == "pct" else _format_signed_mm(item.get("vs_py"))
+    narrative_text = (
+        str(narrative_matches[0].get("snippet", ""))
+        if narrative_matches
+        else "Narrative commentary support is thin in extracted slides."
+    )
+    supplementary_text = ""
+    if supplementary_snippets:
+        snippet = supplementary_snippets[0]
+        supplementary_text = (
+            f" Supporting workbook evidence ({snippet.get('workbook_slug')}:{snippet.get('sheet_name')} "
+            f"row {snippet.get('row_number')}): {snippet.get('snippet_text')}."
+        )
+
+    challenge_question = (
+        f"{region} {metric} challenge: {primary_basis} in {period} with {mom} MoM, {qoq} QoQ, and {yoy} YoY. "
+        "Which driver split best explains the variance versus Budget/LE and what should reverse next month?"
+    )
+    prepared_answer = (
+        f"{metric} is anchored at {primary_basis} (secondary: {secondary_basis}). "
+        f"Deck narrative points to: {narrative_text}. Focus defense on {item.get('driver_focus', '')}."
+        f"{supplementary_text}"
+    )
+    why_now = (
+        f"Budget/LE pressure is material in {period} and requires a causal storyline before executive review."
+    )
+    if item.get("le_change_vs_prior_month") is not None:
+        le_delta = float(item.get("le_change_vs_prior_month") or 0.0)
+        le_label = _format_signed_pp(le_delta) if unit == "pct" else _format_signed_mm(le_delta)
+        why_now = f"{why_now} LE moved {le_label} versus the prior month."
+
+    verify_next = (
+        "Confirm bridge tie-out to row "
+        f"{item.get('row_number', 'n/a')} and validate one-time vs structural split in commentary notes."
+    )
+    if supplementary_snippets:
+        verify_next = (
+            f"{verify_next} Cross-check supporting workbook {supplementary_snippets[0].get('workbook_slug')} for driver proof."
+        )
+
+    confidence = "high"
+    if not narrative_refs:
+        confidence = "low"
+    elif not _ensure_basis_presence(basis_summary):
+        confidence = "medium"
+
+    return {
+        "metric": metric,
+        "region": region,
+        "card_type": "variance",
+        "challenge_question": challenge_question,
+        "prepared_answer": prepared_answer,
+        "why_now": why_now,
+        "basis_summary": basis_summary,
+        "narrative_evidence_refs": sorted(set(narrative_refs))[:4],
+        "supplementary_evidence_refs": sorted(set(supplementary_refs))[:6],
+        "narrative_block_classes": sorted(set(narrative_classes))[:4],
+        "confidence": confidence,
+        "verify_next": verify_next,
+    }
+
+
+def _build_le_watchout_card(
+    *,
+    le_change_flags: list[dict[str, Any]],
+    ranked_candidates: list[dict[str, Any]],
+    supplementary_snippets: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    sorted_flags = sorted(
+        le_change_flags,
+        key=lambda item: (
+            1 if item.get("status") == "missing_current_period_le" else 0,
+            abs(float(item.get("le_change") or 0.0)),
+        ),
+        reverse=True,
+    )
+    chosen = sorted_flags[0] if sorted_flags else {}
+    metric = str(chosen.get("metric", ranked_candidates[0]["metric"] if ranked_candidates else "Total Sales"))
+    candidate = next((item for item in ranked_candidates if item.get("metric") == metric), ranked_candidates[0] if ranked_candidates else {})
+    unit = str(candidate.get("unit", "mm"))
+    basis_summary = _format_basis_summary(candidate, unit) if candidate else {
+        "vs_budget": "n/a",
+        "vs_le": "LE not populated",
+        "mom": "n/a",
+        "qoq": "n/a",
+        "yoy": "n/a",
+    }
+    narrative_matches = candidate.get("narrative_matches", []) if candidate else []
+    narrative_refs = [str(match.get("evidence_ref", "")) for match in narrative_matches if match.get("evidence_ref")]
+    narrative_classes = [str(match.get("block_class", "")) for match in narrative_matches if match.get("block_class")]
+    supplementary_refs = [str(snip.get("evidence_ref", "")) for snip in supplementary_snippets.get(metric, []) if snip.get("evidence_ref")]
+    region = str(candidate.get("region_hint", "C&US")) if candidate else "C&US"
+
+    if chosen:
+        if chosen.get("status") == "missing_current_period_le":
+            challenge = f"{region} {metric} LE watchout: current period LE is not populated. How do we justify actual versus budget without LE anchor?"
+            prepared = (
+                f"LE not populated for {metric} in current period while prior period carried "
+                f"{chosen.get('previous_le')}. Treat this as LE completeness risk, not automatic unfavorable variance."
+            )
+        else:
+            le_change = chosen.get("le_change")
+            le_delta = _format_signed_pp(le_change) if metric in {"SSS%", "SST%"} else _format_signed_mm(le_change)
+            challenge = f"{region} {metric} LE watchout: LE shifted {le_delta} versus prior month. What changed in assumptions and why now?"
+            prepared = (
+                f"LE changed {le_delta} for {metric}. Validate whether movement is structural (run-rate) or one-time timing."
+            )
+    else:
+        challenge = f"{region} LE watchout: no material LE shifts detected. Which assumptions are most at risk of moving in next close?"
+        prepared = "No material LE shifts detected in extracted metrics; maintain proactive watch on pricing, labor, and traffic assumptions."
+
+    return {
+        "metric": metric,
+        "region": region,
+        "card_type": "le_watchout",
+        "challenge_question": challenge,
+        "prepared_answer": prepared,
+        "why_now": "LE deltas can change executive challenge framing even when bridge headlines are stable.",
+        "basis_summary": basis_summary,
+        "narrative_evidence_refs": sorted(set(narrative_refs))[:3],
+        "supplementary_evidence_refs": sorted(set(supplementary_refs))[:4],
+        "narrative_block_classes": sorted(set(narrative_classes))[:4],
+        "confidence": "medium" if chosen else "low",
+        "verify_next": "Confirm LE assumptions and ownership in latest workbook controls before leadership review.",
+    }
+
+
+def _card_to_hot_question(card: dict[str, Any]) -> dict[str, str]:
+    return {
+        "question": str(card.get("challenge_question", "")),
+        "answer": f"{card.get('prepared_answer', '')} Verify next: {card.get('verify_next', '')}",
+    }
+
+
+def _build_variance_hot_questions(pack_dir: Path) -> dict[str, Any]:
+    period = _infer_period_from_pack_dir(pack_dir)
+    pack_type = _infer_pack_type_from_pack_dir(pack_dir)
+    if pack_type not in {"preview", "close"}:
+        return {
+            "challenge_cards": [],
+            "anticipated_hot_questions": [],
+            "variance_question_candidates": [],
+            "supplementary_metric_snippets": {},
+            "le_change_flags": [],
+            "supplementary_evidence_refs": [],
+            "narrative_signal_summary": {},
+            "le_completeness_watchouts": [],
+            "quality_gate": _build_quality_gate([]),
+        }
+
+    current_snapshot, _ = _load_metric_snapshot(pack_dir)
+    if not current_snapshot:
+        return {
+            "challenge_cards": [],
+            "anticipated_hot_questions": [],
+            "variance_question_candidates": [],
+            "supplementary_metric_snippets": {},
+            "le_change_flags": [],
+            "supplementary_evidence_refs": [],
+            "narrative_signal_summary": {},
+            "le_completeness_watchouts": [],
+            "quality_gate": _build_quality_gate([]),
+        }
+
+    repo_root = _repo_root_from_pack_dir(pack_dir)
+    previous_snapshot: dict[str, dict[str, Any]] = {}
+    qoq_snapshot: dict[str, dict[str, Any]] = {}
+    prev_period = _shift_period(period, -1)
+    qoq_period = _shift_period(period, -3)
+
+    if repo_root:
+        if prev_period:
+            prev_pack = repo_root / "data" / "normalized" / prev_period / pack_type
+            if prev_pack.exists():
+                previous_snapshot, _ = _load_metric_snapshot(prev_pack)
+        if qoq_period:
+            qoq_pack = repo_root / "data" / "normalized" / qoq_period / pack_type
+            if qoq_pack.exists():
+                qoq_snapshot, _ = _load_metric_snapshot(qoq_pack)
+
+    sales_now = current_snapshot.get("Total Sales", {}).get("actual")
+    sales_prev = previous_snapshot.get("Total Sales", {}).get("actual")
+
+    candidates: list[dict[str, Any]] = []
+    for metric_name, spec in VARIANCE_METRIC_SPECS.items():
+        current = current_snapshot.get(metric_name)
+        if not current:
+            continue
+        actual = current.get("actual")
+        if actual is None:
+            continue
+        budget = current.get("budget")
+        le = current.get("le")
+        prior_year = current.get("prior_year")
+        prev_actual = previous_snapshot.get(metric_name, {}).get("actual")
+        qoq_actual = qoq_snapshot.get(metric_name, {}).get("actual")
+        prev_le = previous_snapshot.get(metric_name, {}).get("le")
+
+        mom_delta = (actual - prev_actual) if prev_actual is not None else None
+        qoq_delta = (actual - qoq_actual) if qoq_actual is not None else None
+        vs_budget = (actual - budget) if budget is not None else None
+        vs_le = (actual - le) if le is not None and abs(float(le)) > 1e-9 else None
+        vs_py = (actual - prior_year) if prior_year is not None else None
+
+        if spec["unit"] == "pct":
+            severity = max(
+                abs((mom_delta or 0.0) * 100),
+                abs((qoq_delta or 0.0) * 100),
+                abs((vs_budget or 0.0) * 100) * 1.4,
+                abs((vs_le or 0.0) * 100) * 1.3,
+                abs((vs_py or 0.0) * 100) * 0.8,
+            )
+        else:
+            severity = max(
+                abs(mom_delta or 0.0),
+                abs(qoq_delta or 0.0),
+                abs(vs_budget or 0.0) * 1.4,
+                abs(vs_le or 0.0) * 1.3,
+                abs(vs_py or 0.0) * 0.8,
+            )
+
+        margin_delta_pp: float | None = None
+        if metric_name in {"AOI", "Total EBITDA"} and sales_now not in (None, 0) and sales_prev not in (None, 0):
+            margin_now = actual / float(sales_now)
+            margin_prev = prev_actual / float(sales_prev) if prev_actual is not None else None
+            if margin_prev is not None:
+                margin_delta_pp = (margin_now - margin_prev) * 100.0
+
+        candidates.append(
+            {
+                "metric": metric_name,
+                "unit": spec["unit"],
+                "driver_focus": spec["driver_focus"],
+                "row_number": current.get("row_number"),
+                "evidence_ref": current.get("evidence_ref"),
+                "actual": actual,
+                "budget": budget,
+                "le": le,
+                "prior_year": prior_year,
+                "prev_actual": prev_actual,
+                "qoq_actual": qoq_actual,
+                "previous_le": prev_le,
+                "mom_delta": mom_delta,
+                "qoq_delta": qoq_delta,
+                "vs_budget": vs_budget,
+                "vs_le": vs_le,
+                "vs_py": vs_py,
+                "mom_pct": _safe_percent_delta(actual, prev_actual) if spec["unit"] == "mm" else None,
+                "qoq_pct": _safe_percent_delta(actual, qoq_actual) if spec["unit"] == "mm" else None,
+                "vs_budget_pct": _safe_percent_delta(actual, budget) if spec["unit"] == "mm" else None,
+                "vs_le_pct": _safe_percent_delta(actual, le) if spec["unit"] == "mm" else None,
+                "vs_py_pct": _safe_percent_delta(actual, prior_year) if spec["unit"] == "mm" else None,
+                "margin_delta_pp": margin_delta_pp,
+                "le_change_vs_prior_month": (le - prev_le)
+                if le is not None and prev_le is not None
+                else None,
+                "severity_score": round(severity, 3),
+            }
+        )
+
+    narrative_blocks, narrative_summary = _collect_narrative_blocks(pack_dir)
+    for candidate in candidates:
+        narrative_matches = _metric_narrative_matches(str(candidate.get("metric", "")), narrative_blocks)[:4]
+        candidate["narrative_matches"] = narrative_matches
+        candidate["region_hint"] = str(narrative_matches[0].get("region", "C&US")) if narrative_matches else "C&US"
+        narrative_bonus = float(narrative_matches[0].get("score", 0.0)) if narrative_matches else -4.0
+        candidate["ranking_score"] = round(float(candidate.get("severity_score", 0.0)) + max(-6.0, narrative_bonus), 3)
+
+    ranked = sorted(candidates, key=lambda item: float(item.get("ranking_score", 0.0)), reverse=True)
+    supplementary_snippets, supplementary_evidence_refs = _collect_supplementary_evidence(pack_dir, ranked)
+    le_change_flags = _compute_le_change_flags(current_snapshot, previous_snapshot)
+    selected_items: list[tuple[str, dict[str, Any]]] = []
+    used_metrics: set[str] = set()
+    required_mix = [("C&US", 2), ("Canada", 1), ("US", 1)]
+    for region, required_count in required_mix:
+        count = 0
+        region_candidates = [item for item in ranked if item.get("region_hint") == region and item.get("metric") not in used_metrics]
+        fallback_candidates = [item for item in ranked if item.get("metric") not in used_metrics]
+        for candidate in [*region_candidates, *fallback_candidates]:
+            metric = str(candidate.get("metric", ""))
+            if not metric or metric in used_metrics:
+                continue
+            selected_items.append((region, candidate))
+            used_metrics.add(metric)
+            count += 1
+            if count >= required_count:
+                break
+
+    challenge_cards: list[dict[str, Any]] = []
+    for region, candidate in selected_items[:4]:
+        metric = str(candidate.get("metric", ""))
+        challenge_cards.append(
+            _build_challenge_card(
+                item=candidate,
+                period=period,
+                region=region,
+                narrative_matches=(
+                    [match for match in candidate.get("narrative_matches", []) if match.get("block_class") == "narrative"][:2]
+                    or candidate.get("narrative_matches", [])[:2]
+                ),
+                supplementary_snippets=supplementary_snippets.get(metric, [])[:2],
+            )
+        )
+
+    if len(challenge_cards) < 4:
+        for candidate in ranked:
+            metric = str(candidate.get("metric", ""))
+            if metric in used_metrics:
+                continue
+            challenge_cards.append(
+                _build_challenge_card(
+                    item=candidate,
+                    period=period,
+                    region=str(candidate.get("region_hint", "C&US")),
+                    narrative_matches=candidate.get("narrative_matches", [])[:2],
+                    supplementary_snippets=supplementary_snippets.get(metric, [])[:2],
+                )
+            )
+            used_metrics.add(metric)
+            if len(challenge_cards) >= 4:
+                break
+
+    challenge_cards.append(
+        _build_le_watchout_card(
+            le_change_flags=le_change_flags,
+            ranked_candidates=ranked,
+            supplementary_snippets=supplementary_snippets,
+        )
+    )
+    challenge_cards = challenge_cards[:5]
+
+    le_completeness_watchouts = [
+        {
+            "metric": str(item.get("metric", "")),
+            "status": str(item.get("status", "")),
+            "message": f"{item.get('metric')} LE not populated in current period; verify template load and forecast governance.",
+        }
+        for item in le_change_flags
+        if item.get("status") == "missing_current_period_le"
+    ]
+    anticipated_hot_questions = [_card_to_hot_question(card) for card in challenge_cards]
+    quality_gate = _build_quality_gate(challenge_cards)
+
+    return {
+        "challenge_cards": challenge_cards,
+        "anticipated_hot_questions": anticipated_hot_questions,
+        "variance_question_candidates": ranked[:10],
+        "supplementary_metric_snippets": supplementary_snippets,
+        "le_change_flags": le_change_flags,
+        "supplementary_evidence_refs": supplementary_evidence_refs[:50],
+        "narrative_signal_summary": narrative_summary,
+        "le_completeness_watchouts": le_completeness_watchouts,
+        "quality_gate": quality_gate,
+    }
 
 
 def run_hot_questions(
@@ -426,30 +1517,112 @@ def run_hot_questions(
     if score_band == "Yellow":
         actions.insert(0, "Prioritize top 3 medium/high-risk issues before executive sign-off.")
 
-    anticipated_hot_questions = [
-        {
-            "question": "What are the most likely variance challenges I should expect in leadership review?",
-            "answer": (
-                f"Expect challenge on driver clarity and variance explainability. Current band is {score_band} "
-                f"with variance explainability score {variance_score:.1f}, bridge_sheet_count={bridge_sheet_count}, "
-                f"and formula_cells={formula_cells}."
-            ),
-        },
-        {
-            "question": "How confident are we in the numbers behind the variance narrative?",
-            "answer": (
-                f"Data confidence is {data_confidence_score:.1f} with source_mode={source_mode}, "
-                f"external_formula_cells={external_formula_cells}, and lineage_degraded={lineage_degraded}."
-            ),
-        },
-        {
-            "question": "Where is the commentary most exposed to executive pushback?",
-            "answer": (
-                f"Narrative integrity is {narrative_score:.1f}; {notes_missing}/{total_slides} slides are missing notes, "
-                f"and sign_mismatch_signals={sign_mismatch_signals}."
-            ),
-        },
-    ]
+    hotq_bundle = _build_variance_hot_questions(pack_dir)
+    challenge_cards = hotq_bundle.get("challenge_cards", [])
+    anticipated_hot_questions = hotq_bundle.get("anticipated_hot_questions", [])
+    variance_question_candidates = hotq_bundle.get("variance_question_candidates", [])
+    supplementary_metric_snippets = hotq_bundle.get("supplementary_metric_snippets", {})
+    le_change_flags = hotq_bundle.get("le_change_flags", [])
+    supplementary_evidence_refs = hotq_bundle.get("supplementary_evidence_refs", [])
+    narrative_signal_summary = hotq_bundle.get("narrative_signal_summary", {})
+    le_completeness_watchouts = hotq_bundle.get("le_completeness_watchouts", [])
+    quality_gate = hotq_bundle.get("quality_gate", _build_quality_gate(challenge_cards))
+
+    if variance_question_candidates:
+        top = variance_question_candidates[0]
+        top_metric = str(top.get("metric", "metric"))
+        unit = str(top.get("unit", "mm"))
+        summary_bullets.append(
+            f"Top variance focus ({top_metric}): {_basis_phrase(top, basis='vs_budget', unit=unit)} | "
+            f"{_basis_phrase(top, basis='vs_le', unit=unit)}."
+        )
+    if challenge_cards:
+        top_card = challenge_cards[0]
+        summary_bullets.append(
+            f"Top challenge card: {top_card.get('region')} {top_card.get('metric')} | "
+            f"{top_card.get('basis_summary', {}).get('vs_budget', 'n/a')} vs Budget, "
+            f"{top_card.get('basis_summary', {}).get('vs_le', 'n/a')} vs LE."
+        )
+    for ref in supplementary_evidence_refs:
+        if ref not in evidence and len(evidence) < 24:
+            evidence.append(ref)
+    for card in challenge_cards:
+        for ref in card.get("narrative_evidence_refs", []):
+            if ref and ref not in evidence and len(evidence) < 24:
+                evidence.append(ref)
+    if le_change_flags:
+        top_le = sorted(le_change_flags, key=lambda item: abs(float(item.get("le_change") or 0.0)), reverse=True)[:2]
+        le_notes = []
+        for item in top_le:
+            metric = str(item.get("metric", "metric"))
+            if item.get("status") == "missing_current_period_le":
+                le_notes.append(f"{metric} LE is missing/zero in current period; prior month carried a value.")
+            elif metric in {"SSS%", "SST%"}:
+                le_notes.append(f"{metric} LE moved {_format_signed_pp(item.get('le_change'))} vs prior month.")
+            else:
+                le_notes.append(f"{metric} LE moved {_format_signed_mm(item.get('le_change'))} vs prior month.")
+        if le_notes:
+            summary_bullets.append("LE shifts: " + " | ".join(le_notes))
+    if le_completeness_watchouts:
+        summary_bullets.append("LE completeness watchout: " + le_completeness_watchouts[0].get("message", ""))
+
+    if quality_gate.get("status") == "downgraded_narrative_gap":
+        summary_bullets.append("Nuance gate: downgraded due to weak narrative evidence on at least one card.")
+        if confidence == "high":
+            confidence = "medium"
+            confidence_reason = (
+                "Narrative evidence coverage is partial; deterministic variance cards generated with downgrade warning."
+            )
+    elif quality_gate.get("status") == "fail":
+        summary_bullets.append("Nuance gate: failed (insufficient narrative support or basis linkage).")
+        confidence = "low"
+        confidence_reason = "Challenge-card quality gate failed due to missing required narrative or basis evidence."
+
+    if not anticipated_hot_questions:
+        anticipated_hot_questions = [
+            {
+                "question": "What are the most likely variance challenges I should expect in leadership review?",
+                "answer": (
+                    f"Expect challenge on driver clarity and variance explainability. Current band is {score_band} "
+                    f"with variance explainability score {variance_score:.1f}, bridge_sheet_count={bridge_sheet_count}, "
+                    f"and formula_cells={formula_cells}."
+                ),
+            },
+            {
+                "question": "How confident are we in the numbers behind the variance narrative?",
+                "answer": (
+                    f"Data confidence is {data_confidence_score:.1f} with source_mode={source_mode}, "
+                    f"external_formula_cells={external_formula_cells}, and lineage_degraded={lineage_degraded}."
+                ),
+            },
+            {
+                "question": "Where is the commentary most exposed to executive pushback?",
+                "answer": (
+                    f"Narrative integrity is {narrative_score:.1f}; {notes_missing}/{total_slides} slides are missing notes, "
+                    f"and sign_mismatch_signals={sign_mismatch_signals}."
+                ),
+            },
+        ]
+
+    if not challenge_cards:
+        challenge_cards = [
+            {
+                "metric": "Portfolio",
+                "region": "C&US",
+                "card_type": "variance",
+                "challenge_question": anticipated_hot_questions[0]["question"],
+                "prepared_answer": anticipated_hot_questions[0]["answer"],
+                "why_now": "Narrative cards were unavailable from extracted evidence.",
+                "basis_summary": {"vs_budget": "n/a", "vs_le": "LE not populated", "mom": "n/a", "qoq": "n/a", "yoy": "n/a"},
+                "narrative_evidence_refs": [],
+                "supplementary_evidence_refs": supplementary_evidence_refs[:2],
+                "narrative_block_classes": [],
+                "confidence": "low",
+                "verify_next": "Re-tokenize close pack and confirm slide text blocks are available.",
+            }
+        ]
+        quality_gate = _build_quality_gate(challenge_cards)
+
     follow_up_prompt = "Is there any specific questions you'd like help coming up with an answer for?"
 
     payload = {
@@ -473,6 +1646,16 @@ def run_hot_questions(
         "override_notes": override_notes,
         "historical_notes": historical_notes,
         "historical_context_applied": bool(historical_context),
+        "hot_question_prompt_version": VARIANCE_QUESTION_PROMPT_VERSION,
+        "hot_question_prompt": VARIANCE_QUESTION_PROMPT,
+        "variance_question_candidates": variance_question_candidates[:10],
+        "supplementary_metric_snippets": supplementary_metric_snippets,
+        "le_change_flags": le_change_flags,
+        "supplementary_evidence_refs": supplementary_evidence_refs[:50],
+        "challenge_cards": challenge_cards[:5],
+        "narrative_signal_summary": narrative_signal_summary,
+        "le_completeness_watchouts": le_completeness_watchouts,
+        "quality_gate": quality_gate,
         "anticipated_hot_questions": anticipated_hot_questions,
         "follow_up_prompt": follow_up_prompt,
     }
@@ -723,3 +1906,4 @@ def run_variance_watch(pack_dir: Path) -> dict[str, Any]:
 
 def persist_analysis(payload: dict[str, Any], output_path: Path) -> None:
     write_json(output_path, payload)
+

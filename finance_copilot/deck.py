@@ -10,17 +10,117 @@ from xml.etree import ElementTree as ET
 from finance_copilot.common import ensure_dir, utc_now_iso, write_json
 
 NS_A = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
+NS_P = {"p": "http://schemas.openxmlformats.org/presentationml/2006/main"}
 NS_C = {
     "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
 }
 NUMERIC_RE = re.compile(r"\(?-?\$?\d[\d,]*(?:\.\d+)?%?\)?")
+NARRATIVE_CUE_TOKENS = [
+    "what worked",
+    "didn't work",
+    "drivers and impacts",
+    "driven by",
+    "due to",
+    "because",
+    "headwind",
+    "tailwind",
+    "pricing",
+    "traffic",
+    "labor",
+    "commodity",
+    "mix",
+    "promo",
+]
+BRIDGE_CUE_TOKENS = [
+    "bridge",
+    "variance to budget",
+    "variance to le",
+    "vs budget",
+    "vs le",
+    "vs py",
+]
+FOOTER_CUE_TOKENS = [
+    "confidential and proprietary information of restaurant brands international",
+    "source:",
+]
 
 
 def _extract_text_values(xml_bytes: bytes) -> list[str]:
     root = ET.fromstring(xml_bytes)
     texts = [node.text.strip() for node in root.findall(".//a:t", NS_A) if node.text and node.text.strip()]
     return texts
+
+
+def _infer_block_class(text: str, numeric_density: float, line_count: int) -> str:
+    lowered = text.lower()
+    if any(token in lowered for token in FOOTER_CUE_TOKENS):
+        return "footer"
+    if any(token in lowered for token in BRIDGE_CUE_TOKENS):
+        return "bridge_summary"
+    if numeric_density >= 1.25 or (line_count >= 10 and numeric_density > 0.6):
+        return "table_like"
+    if any(token in lowered for token in NARRATIVE_CUE_TOKENS):
+        return "narrative"
+    if len(text) >= 120 and numeric_density < 0.8:
+        return "narrative"
+    return "table_like"
+
+
+def _narrative_signal_score(text: str, numeric_density: float, block_class: str) -> float:
+    lowered = text.lower()
+    cue_hits = sum(1 for token in NARRATIVE_CUE_TOKENS if token in lowered)
+    bridge_hits = sum(1 for token in BRIDGE_CUE_TOKENS if token in lowered)
+    score = cue_hits * 2.2 - bridge_hits * 1.5 - numeric_density * 1.2
+    if block_class == "narrative":
+        score += 3.0
+    if block_class == "footer":
+        score -= 5.0
+    return round(score, 3)
+
+
+def _extract_text_blocks(xml_bytes: bytes) -> list[dict[str, Any]]:
+    root = ET.fromstring(xml_bytes)
+    blocks: list[dict[str, Any]] = []
+    for shape in root.findall(".//p:sp", NS_P):
+        lines = [node.text.strip() for node in shape.findall(".//a:t", NS_A) if node.text and node.text.strip()]
+        if not lines:
+            continue
+        text = " ".join(lines)
+        numeric_mentions = len(NUMERIC_RE.findall(text))
+        numeric_density = round(numeric_mentions / max(1, len(lines)), 3)
+        block_class = _infer_block_class(text, numeric_density, len(lines))
+        blocks.append(
+            {
+                "block_index": len(blocks) + 1,
+                "lines": lines,
+                "char_count": len(text),
+                "numeric_density": numeric_density,
+                "block_class": block_class,
+                "narrative_signal_score": _narrative_signal_score(text, numeric_density, block_class),
+            }
+        )
+
+    if blocks:
+        return blocks
+
+    fallback = _extract_text_values(xml_bytes)
+    if not fallback:
+        return []
+    text = " ".join(fallback)
+    numeric_mentions = len(NUMERIC_RE.findall(text))
+    numeric_density = round(numeric_mentions / max(1, len(fallback)), 3)
+    block_class = _infer_block_class(text, numeric_density, len(fallback))
+    return [
+        {
+            "block_index": 1,
+            "lines": fallback,
+            "char_count": len(text),
+            "numeric_density": numeric_density,
+            "block_class": block_class,
+            "narrative_signal_score": _narrative_signal_score(text, numeric_density, block_class),
+        }
+    ]
 
 
 def _slide_files(zip_names: list[str]) -> list[str]:
@@ -111,8 +211,11 @@ def extract_deck(*, input_path: Path, output_dir: Path) -> dict[str, Any]:
         }
 
         raw_slide_texts: list[list[str]] = []
+        raw_slide_blocks: list[list[dict[str, Any]]] = []
         for slide_xml in slide_files:
-            raw_slide_texts.append(_extract_text_values(archive.read(slide_xml)))
+            slide_bytes = archive.read(slide_xml)
+            raw_slide_texts.append(_extract_text_values(slide_bytes))
+            raw_slide_blocks.append(_extract_text_blocks(slide_bytes))
         boilerplate = _build_boilerplate_set(raw_slide_texts)
 
         slide_chart_map: list[dict[str, Any]] = []
@@ -122,6 +225,42 @@ def extract_deck(*, input_path: Path, output_dir: Path) -> dict[str, Any]:
             filtered_items = [text for text in raw_items if not _is_boilerplate(text, boilerplate)]
             title = filtered_items[0] if filtered_items else next((text for text in raw_items if text.strip()), "")
             body = filtered_items[1:] if len(filtered_items) > 1 else []
+
+            text_blocks: list[dict[str, Any]] = []
+            for raw_block in raw_slide_blocks[index - 1]:
+                filtered_lines = [line for line in raw_block.get("lines", []) if not _is_boilerplate(line, boilerplate)]
+                if not filtered_lines:
+                    continue
+                block_text = " ".join(filtered_lines)
+                numeric_mentions = len(NUMERIC_RE.findall(block_text))
+                numeric_density = round(numeric_mentions / max(1, len(filtered_lines)), 3)
+                block_class = _infer_block_class(block_text, numeric_density, len(filtered_lines))
+                text_blocks.append(
+                    {
+                        "block_index": len(text_blocks) + 1,
+                        "lines": filtered_lines,
+                        "char_count": len(block_text),
+                        "numeric_density": numeric_density,
+                        "block_class": block_class,
+                        "narrative_signal_score": _narrative_signal_score(block_text, numeric_density, block_class),
+                    }
+                )
+
+            if not text_blocks and filtered_items:
+                fallback_text = " ".join(filtered_items)
+                numeric_mentions = len(NUMERIC_RE.findall(fallback_text))
+                numeric_density = round(numeric_mentions / max(1, len(filtered_items)), 3)
+                block_class = _infer_block_class(fallback_text, numeric_density, len(filtered_items))
+                text_blocks.append(
+                    {
+                        "block_index": 1,
+                        "lines": filtered_items,
+                        "char_count": len(fallback_text),
+                        "numeric_density": numeric_density,
+                        "block_class": block_class,
+                        "narrative_signal_score": _narrative_signal_score(fallback_text, numeric_density, block_class),
+                    }
+                )
 
             note_text = ""
             if index in note_map:
@@ -138,6 +277,7 @@ def extract_deck(*, input_path: Path, output_dir: Path) -> dict[str, Any]:
                 "raw_text_items_count": len(raw_items),
                 "filtered_text_items_count": len(filtered_items),
                 "detected_numeric_mentions": number_mentions[:200],
+                "text_blocks": text_blocks,
             }
             write_json(slides_dir / f"slide_{index:03d}.json", slide_record)
             slide_records.append(slide_record)
@@ -204,4 +344,3 @@ def extract_deck(*, input_path: Path, output_dir: Path) -> dict[str, Any]:
         "slide_chart_map": slide_chart_map,
         "boilerplate_filter_report": boilerplate_report,
     }
-
