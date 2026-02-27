@@ -1,0 +1,283 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hot_questions_policy.schema.json",
+  "title": "Hot Questions Policy Configuration",
+  "type": "object",
+  "required": [
+    "policy_version",
+    "term_guard",
+    "scope_rules",
+    "semantics",
+    "card_rules",
+    "le_watchout_rules",
+    "citation_rules",
+    "supplementary_rules"
+  ],
+  "properties": {
+    "policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "term_guard": {
+      "type": "object",
+      "required": [
+        "allowlist",
+        "rewrite_mode",
+        "banned_terms"
+      ],
+      "properties": {
+        "allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rewrite_mode": {
+          "type": "string",
+          "enum": [
+            "deterministic"
+          ]
+        },
+        "banned_terms": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "pattern",
+              "rewrite"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "pattern": {
+                "type": "string",
+                "minLength": 1
+              },
+              "rewrite": {
+                "type": "string",
+                "minLength": 1
+              },
+              "allow_if_numeric": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "scope_rules": {
+      "type": "object",
+      "required": [
+        "restaurant_first_required",
+        "exclude_cpg_primary_without_bridge",
+        "restaurant_tokens",
+        "cpg_tokens",
+        "quantified_bridge_regex"
+      ],
+      "properties": {
+        "restaurant_first_required": {
+          "type": "boolean"
+        },
+        "exclude_cpg_primary_without_bridge": {
+          "type": "boolean"
+        },
+        "restaurant_tokens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "cpg_tokens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "quantified_bridge_regex": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "semantics": {
+      "type": "object",
+      "required": [
+        "preview_equals_le",
+        "primary_bases",
+        "le_change_label"
+      ],
+      "properties": {
+        "preview_equals_le": {
+          "type": "boolean"
+        },
+        "primary_bases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2
+        },
+        "le_change_label": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "card_rules": {
+      "type": "object",
+      "required": [
+        "min_cards",
+        "target_cards",
+        "max_cards",
+        "strict_insufficiency_notice",
+        "do_not_pad_placeholders"
+      ],
+      "properties": {
+        "min_cards": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "target_cards": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_cards": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "strict_insufficiency_notice": {
+          "type": "boolean"
+        },
+        "do_not_pad_placeholders": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "le_watchout_rules": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "include_on_material_shift",
+        "include_on_completeness_gap",
+        "materiality"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "include_on_material_shift": {
+          "type": "boolean"
+        },
+        "include_on_completeness_gap": {
+          "type": "boolean"
+        },
+        "materiality": {
+          "type": "object",
+          "required": [
+            "currency_mm",
+            "percent_pp"
+          ],
+          "properties": {
+            "currency_mm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "percent_pp": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "citation_rules": {
+      "type": "object",
+      "required": [
+        "required_fields",
+        "max_citations_per_card",
+        "excerpt_max_chars"
+      ],
+      "properties": {
+        "required_fields": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "path",
+              "location",
+              "excerpt"
+            ]
+          },
+          "minItems": 3
+        },
+        "max_citations_per_card": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "excerpt_max_chars": {
+          "type": "integer",
+          "minimum": 40
+        }
+      },
+      "additionalProperties": false
+    },
+    "supplementary_rules": {
+      "type": "object",
+      "required": [
+        "phase",
+        "include_current_pack_workbooks",
+        "include_persistent_xlsx",
+        "persistent_root",
+        "exclude_extensions",
+        "analysis_row_limit",
+        "audit_min_score"
+      ],
+      "properties": {
+        "phase": {
+          "type": "string",
+          "enum": [
+            "phase1"
+          ]
+        },
+        "include_current_pack_workbooks": {
+          "type": "boolean"
+        },
+        "include_persistent_xlsx": {
+          "type": "boolean"
+        },
+        "persistent_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exclude_extensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "analysis_row_limit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "audit_min_score": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

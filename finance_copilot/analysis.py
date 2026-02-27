@@ -25,6 +25,112 @@ DEFAULT_HOTQ_SCORING_CONFIG: dict[str, Any] = {
     },
 }
 
+DEFAULT_HOTQ_POLICY: dict[str, Any] = {
+    "policy_version": "2026.02.phase1",
+    "term_guard": {
+        "allowlist": ["data quality", "quality check"],
+        "rewrite_mode": "deterministic",
+        "banned_terms": [
+            {
+                "id": "quality_family",
+                "pattern": r"\b(?:earnings|margin|le(?:\s+base)?)\s+quality\b",
+                "rewrite": "documented variance drivers",
+            },
+            {
+                "id": "quality_shorthand",
+                "pattern": r"\bquality\b",
+                "rewrite": "variance composition",
+            },
+            {
+                "id": "core_operating_demand",
+                "pattern": r"\bcore operating demand\b",
+                "rewrite": "documented traffic and ticket drivers",
+            },
+            {
+                "id": "elasticity_risk",
+                "pattern": r"\belasticity risk\b",
+                "rewrite": "price-volume response risk",
+                "allow_if_numeric": True,
+            },
+            {
+                "id": "traffic_sales_conversion",
+                "pattern": r"\btraffic\s*/\s*sales\s*conversion\b",
+                "rewrite": "traffic-to-sales bridge",
+            },
+            {
+                "id": "trust_attack",
+                "pattern": r"why should leadership trust this le base now\??",
+                "rewrite": (
+                    "what assumptions changed versus prior LE, who owns them, "
+                    "and what lock controls apply next cycle?"
+                ),
+            },
+        ],
+    },
+    "scope_rules": {
+        "restaurant_first_required": True,
+        "exclude_cpg_primary_without_bridge": True,
+        "restaurant_tokens": [
+            "traffic",
+            "ticket",
+            "mix",
+            "pricing",
+            "labor",
+            "restaurant",
+            "franchise",
+            "sales",
+            "aoi",
+            "ebitda",
+            "sst",
+            "sss",
+        ],
+        "cpg_tokens": [
+            "cpg",
+            "consumer packaged",
+            "supply chain",
+            "distribution center",
+            "co-manufacturing",
+            "wholesale",
+        ],
+        "quantified_bridge_regex": r"\$?\d[\d,]*(?:\.\d+)?%?|\b\d+(?:\.\d+)?\s*(?:mm|pp)\b",
+    },
+    "semantics": {
+        "preview_equals_le": True,
+        "primary_bases": ["vs Budget", "vs LE"],
+        "le_change_label": "vs prior LE",
+    },
+    "card_rules": {
+        "min_cards": 2,
+        "target_cards": 5,
+        "max_cards": 5,
+        "strict_insufficiency_notice": True,
+        "do_not_pad_placeholders": True,
+    },
+    "le_watchout_rules": {
+        "enabled": True,
+        "include_on_material_shift": True,
+        "include_on_completeness_gap": True,
+        "materiality": {
+            "currency_mm": 1.0,
+            "percent_pp": 0.5,
+        },
+    },
+    "citation_rules": {
+        "required_fields": ["path", "location", "excerpt"],
+        "max_citations_per_card": 4,
+        "excerpt_max_chars": 240,
+    },
+    "supplementary_rules": {
+        "phase": "phase1",
+        "include_current_pack_workbooks": True,
+        "include_persistent_xlsx": True,
+        "persistent_root": "data/context/persistent",
+        "exclude_extensions": [".pdf"],
+        "analysis_row_limit": 2500,
+        "audit_min_score": 4,
+    },
+}
+
 VARIANCE_QUESTION_PROMPT_VERSION = "variance_challenge_v1"
 VARIANCE_QUESTION_PROMPT = (
     "Generate executive hot questions from tokenized workbook evidence.\n"
@@ -205,6 +311,35 @@ def load_hotq_scoring_config(config_path: Path | None = None) -> dict[str, Any]:
     if total_weight <= 0:
         raise ValueError("Invalid scoring config: sum of weights must be greater than zero.")
     return config
+
+
+def load_hotq_policy(config_path: Path | None = None) -> dict[str, Any]:
+    if config_path and config_path.exists():
+        user_policy = read_json(config_path)
+        policy = _merge_dict(DEFAULT_HOTQ_POLICY, user_policy)
+    else:
+        policy = dict(DEFAULT_HOTQ_POLICY)
+
+    card_rules = policy.get("card_rules", {})
+    min_cards = int(card_rules.get("min_cards", 2))
+    target_cards = int(card_rules.get("target_cards", 5))
+    max_cards = int(card_rules.get("max_cards", 5))
+    if min_cards < 1:
+        raise ValueError("Invalid policy: card_rules.min_cards must be >= 1.")
+    if target_cards < min_cards:
+        target_cards = min_cards
+    if max_cards < target_cards:
+        max_cards = target_cards
+    card_rules["min_cards"] = min_cards
+    card_rules["target_cards"] = target_cards
+    card_rules["max_cards"] = max_cards
+    policy["card_rules"] = card_rules
+
+    policy_version = str(policy.get("policy_version", "")).strip()
+    if not policy_version:
+        raise ValueError("Invalid policy: policy_version is required.")
+
+    return policy
 
 
 def _infer_period_from_pack_dir(pack_dir: Path) -> str:
@@ -395,115 +530,288 @@ def _format_numeric_for_snippet(value: float) -> str:
     return f"{value:.3f}"
 
 
-def _collect_supplementary_evidence(
-    pack_dir: Path, ranked_candidates: list[dict[str, Any]]
-) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
-    workbooks_dir = pack_dir / "workbooks"
-    if not workbooks_dir.exists():
-        return {}, []
-
-    role_map = _load_manifest_roles(pack_dir)
-    primary_sheet_csv, _ = _pick_variance_sheet_csv(pack_dir)
-    primary_workbook = primary_sheet_csv.parents[2].name if primary_sheet_csv else ""
-
-    metric_targets = [str(item.get("metric", "")) for item in ranked_candidates[:6] if item.get("metric")]
-    if not metric_targets:
-        return {}, []
-
+def _collect_persistent_xlsx_evidence(
+    *,
+    pack_dir: Path,
+    metric_targets: list[str],
+    policy: dict[str, Any],
+) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
     snippets_by_metric: dict[str, list[dict[str, Any]]] = {metric: [] for metric in metric_targets}
-    evidence_refs: list[str] = []
+    audit_notes: list[dict[str, Any]] = []
+    supplementary_rules = policy.get("supplementary_rules", {})
+    if not bool(supplementary_rules.get("include_persistent_xlsx", True)):
+        return snippets_by_metric, audit_notes
 
-    workbook_dirs = sorted([path for path in workbooks_dir.iterdir() if path.is_dir()])
-    for workbook_dir in workbook_dirs:
-        workbook_slug = workbook_dir.name
-        role = role_map.get(workbook_slug, "")
-        if workbook_slug == primary_workbook:
-            continue
-        if role and role != "supporting_excel":
-            continue
-
-        meta_path = workbook_dir / "workbook_meta.json"
-        if not meta_path.exists():
-            continue
-        meta = read_json(meta_path)
-        sheets = sorted(
-            meta.get("sheets", []),
-            key=lambda item: _sheet_priority(str(item.get("sheet_name", ""))),
-            reverse=True,
+    repo_root = _repo_root_from_pack_dir(pack_dir)
+    if not repo_root:
+        audit_notes.append(
+            {
+                "scope": "supplementary_persistent",
+                "status": "not_helpful",
+                "reason": "Unable to resolve repo root from pack directory.",
+            }
         )
-        for sheet in sheets:
-            values_csv_rel = str(sheet.get("values_csv", ""))
-            if not values_csv_rel:
-                continue
-            values_csv = workbook_dir / values_csv_rel
-            if not values_csv.exists():
-                continue
+        return snippets_by_metric, audit_notes
 
-            sheet_name = str(sheet.get("sheet_name", ""))
-            row_limit = 2500
-            if _sheet_priority(sheet_name) == 0:
-                row_limit = 600
+    persistent_root = repo_root / str(supplementary_rules.get("persistent_root", "data/context/persistent"))
+    if not persistent_root.exists():
+        audit_notes.append(
+            {
+                "scope": "supplementary_persistent",
+                "status": "not_helpful",
+                "reason": f"Persistent root not found: {persistent_root.relative_to(repo_root).as_posix()}",
+            }
+        )
+        return snippets_by_metric, audit_notes
+
+    try:
+        import openpyxl  # type: ignore
+    except Exception:
+        audit_notes.append(
+            {
+                "scope": "supplementary_persistent",
+                "status": "not_helpful",
+                "reason": "openpyxl dependency unavailable; persistent XLSX scan skipped.",
+            }
+        )
+        return snippets_by_metric, audit_notes
+
+    excluded_ext = {str(ext).lower() for ext in supplementary_rules.get("exclude_extensions", [".pdf"])}
+    row_limit = int(supplementary_rules.get("analysis_row_limit", 2500))
+    xlsx_files = sorted(path for path in persistent_root.rglob("*.xlsx") if path.suffix.lower() not in excluded_ext)
+    if not xlsx_files:
+        audit_notes.append(
+            {
+                "scope": "supplementary_persistent",
+                "status": "not_helpful",
+                "reason": "No persistent XLSX files found in scope.",
+            }
+        )
+        return snippets_by_metric, audit_notes
+
+    files_scanned = 0
+    for workbook_path in xlsx_files:
+        files_scanned += 1
+        try:
+            workbook = openpyxl.load_workbook(workbook_path, data_only=True, read_only=True)
+        except Exception:
+            continue
+        workbook_slug = workbook_path.stem
+        rel_path = str(workbook_path.relative_to(repo_root).as_posix())
+        for sheet_name in workbook.sheetnames:
+            sheet = workbook[sheet_name]
             metric_hits = 0
-            with values_csv.open("r", encoding="utf-8", newline="") as handle:
-                reader = csv.reader(handle)
-                next(reader, None)
-                for row_idx, row in enumerate(reader, start=1):
-                    if row_idx > row_limit:
-                        break
-                    row_text_parts = [str(cell).strip() for cell in row[1:] if str(cell).strip()]
-                    if not row_text_parts:
+            max_row = int(sheet.max_row or row_limit)
+            for row_idx, row_values in enumerate(
+                sheet.iter_rows(min_row=1, max_row=min(row_limit, max_row), values_only=True),
+                start=1,
+            ):
+                row_text_parts = [str(cell).strip() for cell in row_values if cell is not None and str(cell).strip()]
+                if not row_text_parts:
+                    continue
+                joined = " ".join(row_text_parts).lower()
+                numeric_mentions = NUMERIC_RE.findall(joined)
+                if not numeric_mentions:
+                    continue
+                signal_hits = sum(1 for token in SUPPLEMENTARY_SIGNAL_TOKENS if token in joined)
+                if signal_hits == 0:
+                    continue
+                for metric in metric_targets:
+                    if len(snippets_by_metric[metric]) >= 4:
                         continue
-                    joined = " ".join(row_text_parts).lower()
-                    numeric_values = [
-                        value
-                        for value in (_parse_numeric_cell(cell) for cell in row[1:])
-                        if value is not None
-                    ]
-                    if not numeric_values:
+                    keyword_hits = [token for token in METRIC_KEYWORDS.get(metric, []) if token in joined]
+                    if not keyword_hits:
                         continue
-
-                    signal_hits = sum(1 for token in SUPPLEMENTARY_SIGNAL_TOKENS if token in joined)
-                    if signal_hits == 0:
-                        continue
-
-                    for metric in metric_targets:
-                        if len(snippets_by_metric[metric]) >= 4:
-                            continue
-                        keyword_hits = sum(1 for token in METRIC_KEYWORDS.get(metric, []) if token in joined)
-                        if keyword_hits == 0:
-                            continue
-                        score = keyword_hits * 3 + signal_hits
-                        text_excerpt = " | ".join(row_text_parts[:6])[:220]
-                        snippet = {
+                    score = len(keyword_hits) * 3 + signal_hits + min(2, len(numeric_mentions))
+                    snippets_by_metric[metric].append(
+                        {
                             "metric": metric,
                             "workbook_slug": workbook_slug,
                             "sheet_name": sheet_name,
-                            "row_number": str(row[0]).strip() if row else str(row_idx),
-                            "matched_keywords": [token for token in METRIC_KEYWORDS.get(metric, []) if token in joined][:4],
-                            "numeric_values": [_format_numeric_for_snippet(value) for value in numeric_values[:4]],
-                            "snippet_text": text_excerpt,
+                            "row_number": str(row_idx),
+                            "matched_keywords": keyword_hits[:4],
+                            "numeric_values": numeric_mentions[:4],
+                            "snippet_text": " | ".join(row_text_parts[:6])[:220],
                             "score": score,
-                            "evidence_ref": str(values_csv.relative_to(pack_dir).as_posix()),
+                            "evidence_ref": rel_path,
                         }
-                        snippets_by_metric[metric].append(snippet)
-                        evidence_refs.append(snippet["evidence_ref"])
-                        metric_hits += 1
-                    if metric_hits >= 8:
-                        break
+                    )
+                    metric_hits += 1
+                if metric_hits >= 8:
+                    break
+        workbook.close()
 
+    audit_notes.append(
+        {
+            "scope": "supplementary_persistent",
+            "status": "evaluated",
+            "reason": f"Persistent XLSX scan completed; files_scanned={files_scanned}.",
+        }
+    )
+    return snippets_by_metric, audit_notes
+
+
+def _collect_supplementary_evidence(
+    pack_dir: Path,
+    ranked_candidates: list[dict[str, Any]],
+    policy: dict[str, Any],
+) -> tuple[dict[str, list[dict[str, Any]]], list[str], list[dict[str, Any]]]:
+    supplementary_rules = policy.get("supplementary_rules", {})
+    metric_targets = [str(item.get("metric", "")) for item in ranked_candidates[:6] if item.get("metric")]
+    if not metric_targets:
+        return {}, [], []
+
+    snippets_by_metric: dict[str, list[dict[str, Any]]] = {metric: [] for metric in metric_targets}
+    evidence_refs: list[str] = []
+    evidence_gap_registry: list[dict[str, Any]] = []
+    include_current_pack = bool(supplementary_rules.get("include_current_pack_workbooks", True))
+    workbooks_dir = pack_dir / "workbooks"
+
+    if include_current_pack and workbooks_dir.exists():
+        role_map = _load_manifest_roles(pack_dir)
+        primary_sheet_csv, _ = _pick_variance_sheet_csv(pack_dir)
+        primary_workbook = primary_sheet_csv.parents[2].name if primary_sheet_csv else ""
+        workbook_dirs = sorted(path for path in workbooks_dir.iterdir() if path.is_dir())
+        for workbook_dir in workbook_dirs:
+            workbook_slug = workbook_dir.name
+            role = role_map.get(workbook_slug, "")
+            if workbook_slug == primary_workbook:
+                continue
+            if role and role != "supporting_excel":
+                continue
+
+            meta_path = workbook_dir / "workbook_meta.json"
+            if not meta_path.exists():
+                continue
+            meta = read_json(meta_path)
+            sheets = sorted(
+                meta.get("sheets", []),
+                key=lambda item: _sheet_priority(str(item.get("sheet_name", ""))),
+                reverse=True,
+            )
+            for sheet in sheets:
+                values_csv_rel = str(sheet.get("values_csv", ""))
+                if not values_csv_rel:
+                    continue
+                values_csv = workbook_dir / values_csv_rel
+                if not values_csv.exists():
+                    continue
+
+                sheet_name = str(sheet.get("sheet_name", ""))
+                row_limit = int(supplementary_rules.get("analysis_row_limit", 2500))
+                if _sheet_priority(sheet_name) == 0:
+                    row_limit = min(row_limit, 600)
+                metric_hits = 0
+                with values_csv.open("r", encoding="utf-8", newline="") as handle:
+                    reader = csv.reader(handle)
+                    next(reader, None)
+                    for row_idx, row in enumerate(reader, start=1):
+                        if row_idx > row_limit:
+                            break
+                        row_text_parts = [str(cell).strip() for cell in row[1:] if str(cell).strip()]
+                        if not row_text_parts:
+                            continue
+                        joined = " ".join(row_text_parts).lower()
+                        numeric_values = [value for value in (_parse_numeric_cell(cell) for cell in row[1:]) if value is not None]
+                        if not numeric_values:
+                            continue
+                        signal_hits = sum(1 for token in SUPPLEMENTARY_SIGNAL_TOKENS if token in joined)
+                        if signal_hits == 0:
+                            continue
+
+                        for metric in metric_targets:
+                            if len(snippets_by_metric[metric]) >= 4:
+                                continue
+                            keyword_hits = [token for token in METRIC_KEYWORDS.get(metric, []) if token in joined]
+                            if not keyword_hits:
+                                continue
+                            score = len(keyword_hits) * 3 + signal_hits
+                            snippet = {
+                                "metric": metric,
+                                "workbook_slug": workbook_slug,
+                                "sheet_name": sheet_name,
+                                "row_number": str(row[0]).strip() if row else str(row_idx),
+                                "matched_keywords": keyword_hits[:4],
+                                "numeric_values": [_format_numeric_for_snippet(value) for value in numeric_values[:4]],
+                                "snippet_text": " | ".join(row_text_parts[:6])[:220],
+                                "score": score,
+                                "evidence_ref": str(values_csv.relative_to(pack_dir).as_posix()),
+                            }
+                            snippets_by_metric[metric].append(snippet)
+                            evidence_refs.append(snippet["evidence_ref"])
+                            metric_hits += 1
+                        if metric_hits >= 8:
+                            break
+    else:
+        evidence_gap_registry.append(
+            {
+                "scope": "supplementary_current_pack",
+                "status": "not_helpful",
+                "reason": "Current pack workbook scope unavailable for supplementary scan.",
+            }
+        )
+
+    persistent_snippets, persistent_notes = _collect_persistent_xlsx_evidence(
+        pack_dir=pack_dir,
+        metric_targets=metric_targets,
+        policy=policy,
+    )
+    evidence_gap_registry.extend(persistent_notes)
+    for metric, snippets in persistent_snippets.items():
+        for snippet in snippets:
+            snippets_by_metric[metric].append(snippet)
+            evidence_refs.append(str(snippet.get("evidence_ref", "")))
+
+    audit_min_score = int(supplementary_rules.get("audit_min_score", 4))
     for metric in metric_targets:
         snippets_by_metric[metric] = sorted(
-            snippets_by_metric[metric], key=lambda item: float(item.get("score", 0)), reverse=True
+            snippets_by_metric[metric],
+            key=lambda item: float(item.get("score", 0)),
+            reverse=True,
         )[:3]
-    deduped_evidence_refs = sorted(set(evidence_refs))
-    return snippets_by_metric, deduped_evidence_refs
+        if not snippets_by_metric[metric]:
+            evidence_gap_registry.append(
+                {
+                    "scope": "supplementary_metric_audit",
+                    "metric": metric,
+                    "status": "not_helpful",
+                    "reason": "No supplementary workbook evidence met signal thresholds.",
+                }
+            )
+            continue
+        top_score = float(snippets_by_metric[metric][0].get("score", 0.0))
+        if top_score < audit_min_score:
+            evidence_gap_registry.append(
+                {
+                    "scope": "supplementary_metric_audit",
+                    "metric": metric,
+                    "status": "not_helpful",
+                    "reason": f"Supplementary evidence scored below audit threshold ({top_score:.1f}<{audit_min_score}).",
+                }
+            )
+        else:
+            evidence_gap_registry.append(
+                {
+                    "scope": "supplementary_metric_audit",
+                    "metric": metric,
+                    "status": "helpful",
+                    "reason": f"Supplementary evidence passed audit threshold ({top_score:.1f}).",
+                }
+            )
+
+    deduped_evidence_refs = sorted(ref for ref in set(evidence_refs) if ref)
+    return snippets_by_metric, deduped_evidence_refs, evidence_gap_registry
 
 
 def _compute_le_change_flags(
     current_snapshot: dict[str, dict[str, Any]],
     previous_snapshot: dict[str, dict[str, Any]],
+    policy: dict[str, Any],
 ) -> list[dict[str, Any]]:
     flags: list[dict[str, Any]] = []
+    le_materiality = policy.get("le_watchout_rules", {}).get("materiality", {})
+    mm_threshold = float(le_materiality.get("currency_mm", 1.0))
+    pct_threshold = float(le_materiality.get("percent_pp", 0.5)) / 100.0
     for metric, spec in VARIANCE_METRIC_SPECS.items():
         current = current_snapshot.get(metric, {})
         previous = previous_snapshot.get(metric, {})
@@ -535,9 +843,9 @@ def _compute_le_change_flags(
             continue
         delta = float(current_le) - float(previous_le)
         if spec["unit"] == "pct":
-            material = abs(delta) >= 0.005
+            material = abs(delta) >= pct_threshold
         else:
-            material = abs(delta) >= 1.0
+            material = abs(delta) >= mm_threshold
         if not material:
             continue
         flags.append(
@@ -691,7 +999,29 @@ def _collect_narrative_blocks(pack_dir: Path) -> tuple[list[dict[str, Any]], dic
     return blocks, summary
 
 
-def _metric_narrative_matches(metric: str, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _classify_scope(text: str, policy: dict[str, Any]) -> tuple[str, bool, int, int]:
+    scope_rules = policy.get("scope_rules", {})
+    lowered = text.lower()
+    restaurant_tokens = [str(token).lower() for token in scope_rules.get("restaurant_tokens", [])]
+    cpg_tokens = [str(token).lower() for token in scope_rules.get("cpg_tokens", [])]
+    restaurant_hits = sum(1 for token in restaurant_tokens if token and token in lowered)
+    cpg_hits = sum(1 for token in cpg_tokens if token and token in lowered)
+    quantified_regex = str(scope_rules.get("quantified_bridge_regex", ""))
+    bridge_quantified = bool(quantified_regex and re.search(quantified_regex, lowered))
+    if cpg_hits > restaurant_hits and not bridge_quantified:
+        return "cpg_primary", bridge_quantified, restaurant_hits, cpg_hits
+    if cpg_hits and restaurant_hits and bridge_quantified:
+        return "quantified_bridge", bridge_quantified, restaurant_hits, cpg_hits
+    if restaurant_hits and cpg_hits:
+        return "restaurant_mixed", bridge_quantified, restaurant_hits, cpg_hits
+    if restaurant_hits:
+        return "restaurant_primary", bridge_quantified, restaurant_hits, cpg_hits
+    if cpg_hits:
+        return "cpg_secondary", bridge_quantified, restaurant_hits, cpg_hits
+    return "unclassified", bridge_quantified, restaurant_hits, cpg_hits
+
+
+def _metric_narrative_matches(metric: str, blocks: list[dict[str, Any]], policy: dict[str, Any]) -> list[dict[str, Any]]:
     keywords = METRIC_KEYWORDS.get(metric, [])
     driver_tokens = [token for tokens in VARIANCE_DRIVER_LEXICON.values() for token in tokens]
     matches: list[dict[str, Any]] = []
@@ -714,6 +1044,7 @@ def _metric_narrative_matches(metric: str, blocks: list[dict[str, Any]]) -> list
             score -= 3.0
         elif block_class == "table_like":
             score -= 1.0
+        scope_classification, bridge_quantified, restaurant_hit_count, cpg_hit_count = _classify_scope(text, policy)
         matches.append(
             {
                 "evidence_ref": str(block.get("evidence_ref", "")),
@@ -723,6 +1054,10 @@ def _metric_narrative_matches(metric: str, blocks: list[dict[str, Any]]) -> list
                 "block_class": block_class,
                 "snippet": " | ".join(block.get("lines", [])[:3])[:280],
                 "matched_driver_tokens": sorted(set(driver_hits))[:6],
+                "scope_classification": scope_classification,
+                "bridge_quantified": bridge_quantified,
+                "restaurant_hit_count": restaurant_hit_count,
+                "cpg_hit_count": cpg_hit_count,
                 "score": round(score, 3),
             }
         )
@@ -816,6 +1151,33 @@ def _build_quality_gate(challenge_cards: list[dict[str, Any]]) -> dict[str, Any]
         }
     )
 
+    citation_missing = []
+    for card in challenge_cards:
+        if card.get("card_type") != "le_watchout":
+            citations = card.get("citation_bundle", [])
+            valid = False
+            if isinstance(citations, list):
+                for citation in citations:
+                    if not isinstance(citation, dict):
+                        continue
+                    path = str(citation.get("path", "")).strip()
+                    location = str(citation.get("location", "")).strip()
+                    excerpt = str(citation.get("excerpt", "")).strip()
+                    if path and location and excerpt and len(excerpt) >= 12:
+                        valid = True
+                        break
+            if not valid:
+                citation_missing.append(str(card.get("metric", "")))
+    checks.append(
+        {
+            "check": "citation_bundle_per_card",
+            "status": "pass" if not citation_missing else "fail",
+            "message": "All non-watchout cards include citation bundle entries."
+            if not citation_missing
+            else f"Missing citation bundle for: {', '.join(citation_missing)}",
+        }
+    )
+
     failed = [check for check in checks if check["status"] == "fail"]
     status = "pass"
     if failed:
@@ -823,6 +1185,196 @@ def _build_quality_gate(challenge_cards: list[dict[str, Any]]) -> dict[str, Any]
     if len(failed) >= 2:
         status = "fail"
     return {"status": status, "checks": checks}
+
+
+def _apply_scope_filters(
+    matches: list[dict[str, Any]],
+    *,
+    metric: str,
+    policy: dict[str, Any],
+    scope_filters_applied: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    scope_rules = policy.get("scope_rules", {})
+    filter_cpg_primary = bool(scope_rules.get("exclude_cpg_primary_without_bridge", True))
+    filtered: list[dict[str, Any]] = []
+    for match in matches:
+        scope_classification = str(match.get("scope_classification", "unclassified"))
+        bridge_quantified = bool(match.get("bridge_quantified", False))
+        if filter_cpg_primary and scope_classification == "cpg_primary" and not bridge_quantified:
+            scope_filters_applied.append(
+                {
+                    "metric": metric,
+                    "evidence_ref": str(match.get("evidence_ref", "")),
+                    "scope_classification": scope_classification,
+                    "reason": "Excluded CPG-primary narrative without quantified restaurant bridge.",
+                }
+            )
+            continue
+        filtered.append(match)
+    return filtered
+
+
+def _citation_excerpt(text: str, max_chars: int) -> str:
+    compact = " ".join(str(text).split())
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max_chars - 3].rstrip() + "..."
+
+
+def _build_citation_bundle(
+    *,
+    item: dict[str, Any],
+    narrative_matches: list[dict[str, Any]],
+    supplementary_snippets: list[dict[str, Any]],
+    policy: dict[str, Any],
+) -> list[dict[str, str]]:
+    citation_rules = policy.get("citation_rules", {})
+    max_citations = int(citation_rules.get("max_citations_per_card", 4))
+    excerpt_max_chars = int(citation_rules.get("excerpt_max_chars", 240))
+    bundle: list[dict[str, str]] = []
+
+    for match in narrative_matches:
+        path = str(match.get("evidence_ref", "")).strip()
+        if not path:
+            continue
+        slide_number = int(match.get("slide_number", 0))
+        location = f"slide {slide_number}" if slide_number > 0 else "slide"
+        excerpt = _citation_excerpt(str(match.get("snippet", "")), excerpt_max_chars)
+        if excerpt:
+            bundle.append({"path": path, "location": location, "excerpt": excerpt})
+
+    for snippet in supplementary_snippets:
+        path = str(snippet.get("evidence_ref", "")).strip()
+        if not path:
+            continue
+        sheet_name = str(snippet.get("sheet_name", "")).strip() or "sheet"
+        row_number = str(snippet.get("row_number", "")).strip() or "n/a"
+        location = f"{sheet_name} row {row_number}"
+        excerpt = _citation_excerpt(str(snippet.get("snippet_text", "")), excerpt_max_chars)
+        if excerpt:
+            bundle.append({"path": path, "location": location, "excerpt": excerpt})
+
+    base_path = str(item.get("evidence_ref", "")).strip()
+    if base_path:
+        metric = str(item.get("metric", "")).strip() or "metric"
+        location = f"row {item.get('row_number', 'n/a')}"
+        unit = str(item.get("unit", "mm"))
+        basis_vs_budget = _format_basis_delta(item, basis="vs_budget", unit=unit)
+        basis_vs_le = _format_basis_delta(item, basis="vs_le", unit=unit) if item.get("vs_le") is not None else "LE not populated"
+        excerpt = _citation_excerpt(f"{metric}: {basis_vs_budget} vs Budget, {basis_vs_le} vs LE.", excerpt_max_chars)
+        bundle.append({"path": base_path, "location": location, "excerpt": excerpt})
+
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for citation in bundle:
+        key = (citation["path"], citation["location"], citation["excerpt"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(citation)
+        if len(deduped) >= max_citations:
+            break
+    return deduped
+
+
+def _apply_term_guard_to_text(
+    text: str,
+    *,
+    card_metric: str,
+    field: str,
+    policy: dict[str, Any],
+) -> tuple[str, list[dict[str, Any]], bool]:
+    term_guard = policy.get("term_guard", {})
+    allowlist = [str(item).lower() for item in term_guard.get("allowlist", [])]
+    banned_terms = term_guard.get("banned_terms", [])
+    rewritten = text
+    hits: list[dict[str, Any]] = []
+    downgraded = False
+
+    for rule in banned_terms:
+        pattern = str(rule.get("pattern", "")).strip()
+        if not pattern:
+            continue
+        regex = re.compile(pattern, re.IGNORECASE)
+        matched = regex.search(rewritten)
+        if not matched:
+            continue
+        matched_text = matched.group(0)
+        lowered = rewritten.lower()
+        if any(phrase in lowered and matched_text.lower() in phrase for phrase in allowlist):
+            continue
+        if bool(rule.get("allow_if_numeric")) and NUMERIC_RE.search(rewritten):
+            continue
+
+        replacement = str(rule.get("rewrite", "")).strip()
+        if replacement:
+            rewritten, replacements = regex.subn(replacement, rewritten)
+            if replacements > 0:
+                hits.append(
+                    {
+                        "metric": card_metric,
+                        "field": field,
+                        "term_id": str(rule.get("id", "unknown")),
+                        "matched_text": matched_text,
+                        "rewrite_applied": replacement,
+                        "status": "rewritten",
+                        "count": replacements,
+                    }
+                )
+            continue
+
+        rewritten, replacements = regex.subn("[unsupported wording removed]", rewritten)
+        if replacements > 0:
+            hits.append(
+                {
+                    "metric": card_metric,
+                    "field": field,
+                    "term_id": str(rule.get("id", "unknown")),
+                    "matched_text": matched_text,
+                    "rewrite_applied": "",
+                    "status": "blocked",
+                    "count": replacements,
+                }
+            )
+            downgraded = True
+
+    return rewritten, hits, downgraded
+
+
+def _apply_term_guard_to_cards(
+    cards: list[dict[str, Any]],
+    *,
+    policy: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    guarded: list[dict[str, Any]] = []
+    term_guard_hits: list[dict[str, Any]] = []
+    for card in cards:
+        card_copy = dict(card)
+        metric = str(card_copy.get("metric", "metric"))
+        question, question_hits, question_downgraded = _apply_term_guard_to_text(
+            str(card_copy.get("challenge_question", "")),
+            card_metric=metric,
+            field="challenge_question",
+            policy=policy,
+        )
+        answer, answer_hits, answer_downgraded = _apply_term_guard_to_text(
+            str(card_copy.get("prepared_answer", "")),
+            card_metric=metric,
+            field="prepared_answer",
+            policy=policy,
+        )
+        card_copy["challenge_question"] = question
+        card_copy["prepared_answer"] = answer
+        if question_downgraded or answer_downgraded:
+            card_copy["confidence"] = "low"
+            card_copy["verify_next"] = (
+                f"{card_copy.get('verify_next', '').strip()} "
+                "Replace blocked shorthand with deck-native drivers before executive review."
+            ).strip()
+        term_guard_hits.extend(question_hits)
+        term_guard_hits.extend(answer_hits)
+        guarded.append(card_copy)
+    return guarded, term_guard_hits
 
 
 def _primary_basis(item: dict[str, Any], unit: str) -> tuple[str, str]:
@@ -840,6 +1392,7 @@ def _build_challenge_card(
     region: str,
     narrative_matches: list[dict[str, Any]],
     supplementary_snippets: list[dict[str, Any]],
+    policy: dict[str, Any],
 ) -> dict[str, Any]:
     metric = str(item["metric"])
     unit = str(item["unit"])
@@ -880,7 +1433,8 @@ def _build_challenge_card(
     if item.get("le_change_vs_prior_month") is not None:
         le_delta = float(item.get("le_change_vs_prior_month") or 0.0)
         le_label = _format_signed_pp(le_delta) if unit == "pct" else _format_signed_mm(le_delta)
-        why_now = f"{why_now} LE moved {le_label} versus the prior month."
+        le_change_label = str(policy.get("semantics", {}).get("le_change_label", "vs prior LE"))
+        why_now = f"{why_now} LE moved {le_label} {le_change_label}."
 
     verify_next = (
         "Confirm bridge tie-out to row "
@@ -897,6 +1451,18 @@ def _build_challenge_card(
     elif not _ensure_basis_presence(basis_summary):
         confidence = "medium"
 
+    citation_bundle = _build_citation_bundle(
+        item=item,
+        narrative_matches=narrative_matches,
+        supplementary_snippets=supplementary_snippets,
+        policy=policy,
+    )
+    scope_classification = (
+        str(narrative_matches[0].get("scope_classification", "unclassified"))
+        if narrative_matches
+        else "unclassified"
+    )
+
     return {
         "metric": metric,
         "region": region,
@@ -908,6 +1474,8 @@ def _build_challenge_card(
         "narrative_evidence_refs": sorted(set(narrative_refs))[:4],
         "supplementary_evidence_refs": sorted(set(supplementary_refs))[:6],
         "narrative_block_classes": sorted(set(narrative_classes))[:4],
+        "scope_classification": scope_classification,
+        "citation_bundle": citation_bundle,
         "confidence": confidence,
         "verify_next": verify_next,
     }
@@ -918,6 +1486,7 @@ def _build_le_watchout_card(
     le_change_flags: list[dict[str, Any]],
     ranked_candidates: list[dict[str, Any]],
     supplementary_snippets: dict[str, list[dict[str, Any]]],
+    policy: dict[str, Any],
 ) -> dict[str, Any]:
     sorted_flags = sorted(
         le_change_flags,
@@ -954,13 +1523,29 @@ def _build_le_watchout_card(
         else:
             le_change = chosen.get("le_change")
             le_delta = _format_signed_pp(le_change) if metric in {"SSS%", "SST%"} else _format_signed_mm(le_change)
-            challenge = f"{region} {metric} LE watchout: LE shifted {le_delta} versus prior month. What changed in assumptions and why now?"
+            le_change_label = str(policy.get("semantics", {}).get("le_change_label", "vs prior LE"))
+            challenge = (
+                f"{region} {metric} LE watchout: LE shifted {le_delta} {le_change_label}. "
+                "What changed in assumptions and why now?"
+            )
             prepared = (
                 f"LE changed {le_delta} for {metric}. Validate whether movement is structural (run-rate) or one-time timing."
             )
     else:
         challenge = f"{region} LE watchout: no material LE shifts detected. Which assumptions are most at risk of moving in next close?"
         prepared = "No material LE shifts detected in extracted metrics; maintain proactive watch on pricing, labor, and traffic assumptions."
+
+    citation_bundle = _build_citation_bundle(
+        item=candidate if candidate else {"metric": metric},
+        narrative_matches=narrative_matches[:2],
+        supplementary_snippets=supplementary_snippets.get(metric, [])[:2],
+        policy=policy,
+    )
+    scope_classification = (
+        str(narrative_matches[0].get("scope_classification", "unclassified"))
+        if narrative_matches
+        else "unclassified"
+    )
 
     return {
         "metric": metric,
@@ -973,6 +1558,8 @@ def _build_le_watchout_card(
         "narrative_evidence_refs": sorted(set(narrative_refs))[:3],
         "supplementary_evidence_refs": sorted(set(supplementary_refs))[:4],
         "narrative_block_classes": sorted(set(narrative_classes))[:4],
+        "scope_classification": scope_classification,
+        "citation_bundle": citation_bundle,
         "confidence": "medium" if chosen else "low",
         "verify_next": "Confirm LE assumptions and ownership in latest workbook controls before leadership review.",
     }
@@ -985,35 +1572,40 @@ def _card_to_hot_question(card: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _build_variance_hot_questions(pack_dir: Path) -> dict[str, Any]:
+def _build_variance_hot_questions(pack_dir: Path, policy: dict[str, Any]) -> dict[str, Any]:
     period = _infer_period_from_pack_dir(pack_dir)
     pack_type = _infer_pack_type_from_pack_dir(pack_dir)
+    policy_version = str(policy.get("policy_version", "unknown"))
+    scope_filters_applied: list[dict[str, Any]] = []
+    evidence_gap_registry: list[dict[str, Any]] = []
+    empty_payload = {
+        "policy_version": policy_version,
+        "term_guard_hits": [],
+        "scope_filters_applied": scope_filters_applied,
+        "evidence_gap_registry": evidence_gap_registry,
+        "challenge_cards": [],
+        "anticipated_hot_questions": [],
+        "variance_question_candidates": [],
+        "supplementary_metric_snippets": {},
+        "le_change_flags": [],
+        "supplementary_evidence_refs": [],
+        "narrative_signal_summary": {},
+        "le_completeness_watchouts": [],
+        "quality_gate": _build_quality_gate([]),
+    }
     if pack_type not in {"preview", "close"}:
-        return {
-            "challenge_cards": [],
-            "anticipated_hot_questions": [],
-            "variance_question_candidates": [],
-            "supplementary_metric_snippets": {},
-            "le_change_flags": [],
-            "supplementary_evidence_refs": [],
-            "narrative_signal_summary": {},
-            "le_completeness_watchouts": [],
-            "quality_gate": _build_quality_gate([]),
-        }
+        return empty_payload
 
     current_snapshot, _ = _load_metric_snapshot(pack_dir)
     if not current_snapshot:
-        return {
-            "challenge_cards": [],
-            "anticipated_hot_questions": [],
-            "variance_question_candidates": [],
-            "supplementary_metric_snippets": {},
-            "le_change_flags": [],
-            "supplementary_evidence_refs": [],
-            "narrative_signal_summary": {},
-            "le_completeness_watchouts": [],
-            "quality_gate": _build_quality_gate([]),
-        }
+        evidence_gap_registry.append(
+            {
+                "scope": "snapshot",
+                "status": "not_helpful",
+                "reason": "No current metric snapshot available from normalized workbook extracts.",
+            }
+        )
+        return empty_payload
 
     repo_root = _repo_root_from_pack_dir(pack_dir)
     previous_snapshot: dict[str, dict[str, Any]] = {}
@@ -1113,22 +1705,74 @@ def _build_variance_hot_questions(pack_dir: Path) -> dict[str, Any]:
 
     narrative_blocks, narrative_summary = _collect_narrative_blocks(pack_dir)
     for candidate in candidates:
-        narrative_matches = _metric_narrative_matches(str(candidate.get("metric", "")), narrative_blocks)[:4]
+        metric = str(candidate.get("metric", ""))
+        narrative_matches = _metric_narrative_matches(metric, narrative_blocks, policy)[:6]
+        narrative_matches = _apply_scope_filters(
+            narrative_matches,
+            metric=metric,
+            policy=policy,
+            scope_filters_applied=scope_filters_applied,
+        )[:4]
         candidate["narrative_matches"] = narrative_matches
         candidate["region_hint"] = str(narrative_matches[0].get("region", "C&US")) if narrative_matches else "C&US"
+        candidate["scope_classification"] = (
+            str(narrative_matches[0].get("scope_classification", "unclassified"))
+            if narrative_matches
+            else "unclassified"
+        )
+        if not narrative_matches:
+            evidence_gap_registry.append(
+                {
+                    "scope": "narrative_match",
+                    "metric": metric,
+                    "status": "not_helpful",
+                    "reason": "No restaurant-first narrative evidence remained after scope filtering.",
+                }
+            )
         narrative_bonus = float(narrative_matches[0].get("score", 0.0)) if narrative_matches else -4.0
         candidate["ranking_score"] = round(float(candidate.get("severity_score", 0.0)) + max(-6.0, narrative_bonus), 3)
 
     ranked = sorted(candidates, key=lambda item: float(item.get("ranking_score", 0.0)), reverse=True)
-    supplementary_snippets, supplementary_evidence_refs = _collect_supplementary_evidence(pack_dir, ranked)
-    le_change_flags = _compute_le_change_flags(current_snapshot, previous_snapshot)
+    supplementary_snippets, supplementary_evidence_refs, supplementary_registry = _collect_supplementary_evidence(
+        pack_dir,
+        ranked,
+        policy,
+    )
+    evidence_gap_registry.extend(supplementary_registry)
+    le_change_flags = _compute_le_change_flags(current_snapshot, previous_snapshot, policy)
+    card_rules = policy.get("card_rules", {})
+    min_cards = int(card_rules.get("min_cards", 2))
+    target_cards = int(card_rules.get("target_cards", 5))
+    max_cards = int(card_rules.get("max_cards", 5))
+
+    def _candidate_supportable(candidate: dict[str, Any]) -> bool:
+        basis_summary = _format_basis_summary(candidate, str(candidate.get("unit", "mm")))
+        return bool(candidate.get("narrative_matches")) and _ensure_basis_presence(basis_summary)
+
+    supportable_candidates = [candidate for candidate in ranked if _candidate_supportable(candidate)]
+    if len(supportable_candidates) < min_cards:
+        evidence_gap_registry.append(
+            {
+                "scope": "card_sufficiency",
+                "status": "not_helpful",
+                "reason": (
+                    f"Only {len(supportable_candidates)} evidence-backed cards supportable; "
+                    f"minimum required is {min_cards}."
+                ),
+            }
+        )
+
     selected_items: list[tuple[str, dict[str, Any]]] = []
     used_metrics: set[str] = set()
     required_mix = [("C&US", 2), ("Canada", 1), ("US", 1)]
     for region, required_count in required_mix:
         count = 0
-        region_candidates = [item for item in ranked if item.get("region_hint") == region and item.get("metric") not in used_metrics]
-        fallback_candidates = [item for item in ranked if item.get("metric") not in used_metrics]
+        region_candidates = [
+            item
+            for item in supportable_candidates
+            if item.get("region_hint") == region and item.get("metric") not in used_metrics
+        ]
+        fallback_candidates = [item for item in supportable_candidates if item.get("metric") not in used_metrics]
         for candidate in [*region_candidates, *fallback_candidates]:
             metric = str(candidate.get("metric", ""))
             if not metric or metric in used_metrics:
@@ -1140,7 +1784,7 @@ def _build_variance_hot_questions(pack_dir: Path) -> dict[str, Any]:
                 break
 
     challenge_cards: list[dict[str, Any]] = []
-    for region, candidate in selected_items[:4]:
+    for region, candidate in selected_items[:target_cards]:
         metric = str(candidate.get("metric", ""))
         challenge_cards.append(
             _build_challenge_card(
@@ -1152,11 +1796,12 @@ def _build_variance_hot_questions(pack_dir: Path) -> dict[str, Any]:
                     or candidate.get("narrative_matches", [])[:2]
                 ),
                 supplementary_snippets=supplementary_snippets.get(metric, [])[:2],
+                policy=policy,
             )
         )
 
-    if len(challenge_cards) < 4:
-        for candidate in ranked:
+    if len(challenge_cards) < target_cards:
+        for candidate in supportable_candidates:
             metric = str(candidate.get("metric", ""))
             if metric in used_metrics:
                 continue
@@ -1167,20 +1812,43 @@ def _build_variance_hot_questions(pack_dir: Path) -> dict[str, Any]:
                     region=str(candidate.get("region_hint", "C&US")),
                     narrative_matches=candidate.get("narrative_matches", [])[:2],
                     supplementary_snippets=supplementary_snippets.get(metric, [])[:2],
+                    policy=policy,
                 )
             )
             used_metrics.add(metric)
-            if len(challenge_cards) >= 4:
+            if len(challenge_cards) >= target_cards:
                 break
 
-    challenge_cards.append(
-        _build_le_watchout_card(
+    watchout_rules = policy.get("le_watchout_rules", {})
+    completeness_flags = [item for item in le_change_flags if item.get("status") == "missing_current_period_le"]
+    material_flags = [item for item in le_change_flags if item.get("status") != "missing_current_period_le"]
+    include_watchout = bool(watchout_rules.get("enabled", True)) and (
+        (bool(watchout_rules.get("include_on_material_shift", True)) and bool(material_flags))
+        or (bool(watchout_rules.get("include_on_completeness_gap", True)) and bool(completeness_flags))
+    )
+    if include_watchout:
+        watchout_card = _build_le_watchout_card(
             le_change_flags=le_change_flags,
             ranked_candidates=ranked,
             supplementary_snippets=supplementary_snippets,
+            policy=policy,
         )
-    )
-    challenge_cards = challenge_cards[:5]
+        if len(challenge_cards) >= max_cards:
+            challenge_cards = challenge_cards[: max(0, max_cards - 1)]
+        challenge_cards.append(watchout_card)
+    challenge_cards = challenge_cards[:max_cards]
+
+    if len([card for card in challenge_cards if card.get("card_type") != "le_watchout"]) < min_cards:
+        evidence_gap_registry.append(
+            {
+                "scope": "card_output",
+                "status": "not_helpful",
+                "reason": (
+                    f"Returned fewer than minimum required evidence-backed cards ({min_cards}); "
+                    "output intentionally not padded."
+                ),
+            }
+        )
 
     le_completeness_watchouts = [
         {
@@ -1191,10 +1859,15 @@ def _build_variance_hot_questions(pack_dir: Path) -> dict[str, Any]:
         for item in le_change_flags
         if item.get("status") == "missing_current_period_le"
     ]
+    challenge_cards, term_guard_hits = _apply_term_guard_to_cards(challenge_cards, policy=policy)
     anticipated_hot_questions = [_card_to_hot_question(card) for card in challenge_cards]
     quality_gate = _build_quality_gate(challenge_cards)
 
     return {
+        "policy_version": policy_version,
+        "term_guard_hits": term_guard_hits,
+        "scope_filters_applied": scope_filters_applied,
+        "evidence_gap_registry": evidence_gap_registry,
         "challenge_cards": challenge_cards,
         "anticipated_hot_questions": anticipated_hot_questions,
         "variance_question_candidates": ranked[:10],
@@ -1212,10 +1885,12 @@ def run_hot_questions(
     question: str | None = None,
     *,
     scoring_config: dict[str, Any] | None = None,
+    policy_config: dict[str, Any] | None = None,
     month_override: dict[str, Any] | None = None,
     historical_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = load_hotq_scoring_config() if scoring_config is None else scoring_config
+    policy = load_hotq_policy() if policy_config is None else policy_config
     weights = config["weights"]
     penalties = config.get("penalties", {})
     pack_type = _infer_pack_type_from_pack_dir(pack_dir)
@@ -1475,6 +2150,10 @@ def run_hot_questions(
         f"Commentary tone: favorable={favorable_count}, unfavorable={unfavorable_count}, risk_mentions={risk_mentions}.",
         f"Lineage density: formula_cells={formula_cells}, external_links={external_link_count}, external_formula_cells={external_formula_cells}.",
     ]
+    if pack_type == "preview" and bool(policy.get("semantics", {}).get("preview_equals_le", True)):
+        summary_bullets.append(
+            "Semantic guard: preview is treated as current LE; use vs Budget and vs prior LE for LE movement."
+        )
     if baseline_note:
         summary_bullets.append(baseline_note)
     if trailing_context:
@@ -1517,7 +2196,7 @@ def run_hot_questions(
     if score_band == "Yellow":
         actions.insert(0, "Prioritize top 3 medium/high-risk issues before executive sign-off.")
 
-    hotq_bundle = _build_variance_hot_questions(pack_dir)
+    hotq_bundle = _build_variance_hot_questions(pack_dir, policy)
     challenge_cards = hotq_bundle.get("challenge_cards", [])
     anticipated_hot_questions = hotq_bundle.get("anticipated_hot_questions", [])
     variance_question_candidates = hotq_bundle.get("variance_question_candidates", [])
@@ -1527,6 +2206,10 @@ def run_hot_questions(
     narrative_signal_summary = hotq_bundle.get("narrative_signal_summary", {})
     le_completeness_watchouts = hotq_bundle.get("le_completeness_watchouts", [])
     quality_gate = hotq_bundle.get("quality_gate", _build_quality_gate(challenge_cards))
+    policy_version = str(hotq_bundle.get("policy_version", policy.get("policy_version", "unknown")))
+    term_guard_hits = hotq_bundle.get("term_guard_hits", [])
+    scope_filters_applied = hotq_bundle.get("scope_filters_applied", [])
+    evidence_gap_registry = hotq_bundle.get("evidence_gap_registry", [])
 
     if variance_question_candidates:
         top = variance_question_candidates[0]
@@ -1565,6 +2248,19 @@ def run_hot_questions(
             summary_bullets.append("LE shifts: " + " | ".join(le_notes))
     if le_completeness_watchouts:
         summary_bullets.append("LE completeness watchout: " + le_completeness_watchouts[0].get("message", ""))
+    insufficiency_notice = ""
+    if evidence_gap_registry:
+        insufficiency = next(
+            (
+                item
+                for item in evidence_gap_registry
+                if str(item.get("scope", "")).startswith("card_") and item.get("status") == "not_helpful"
+            ),
+            None,
+        )
+        if insufficiency:
+            insufficiency_notice = str(insufficiency.get("reason", "")).strip()
+            summary_bullets.append(f"Evidence insufficiency: {insufficiency_notice}")
 
     if quality_gate.get("status") == "downgraded_narrative_gap":
         summary_bullets.append("Nuance gate: downgraded due to weak narrative evidence on at least one card.")
@@ -1604,7 +2300,7 @@ def run_hot_questions(
             },
         ]
 
-    if not challenge_cards:
+    if not challenge_cards and not bool(policy.get("card_rules", {}).get("do_not_pad_placeholders", True)):
         challenge_cards = [
             {
                 "metric": "Portfolio",
@@ -1617,6 +2313,8 @@ def run_hot_questions(
                 "narrative_evidence_refs": [],
                 "supplementary_evidence_refs": supplementary_evidence_refs[:2],
                 "narrative_block_classes": [],
+                "scope_classification": "unclassified",
+                "citation_bundle": [],
                 "confidence": "low",
                 "verify_next": "Re-tokenize close pack and confirm slide text blocks are available.",
             }
@@ -1646,13 +2344,18 @@ def run_hot_questions(
         "override_notes": override_notes,
         "historical_notes": historical_notes,
         "historical_context_applied": bool(historical_context),
+        "policy_version": policy_version,
+        "term_guard_hits": term_guard_hits,
+        "scope_filters_applied": scope_filters_applied,
+        "evidence_gap_registry": evidence_gap_registry,
+        "insufficiency_notice": insufficiency_notice,
         "hot_question_prompt_version": VARIANCE_QUESTION_PROMPT_VERSION,
         "hot_question_prompt": VARIANCE_QUESTION_PROMPT,
         "variance_question_candidates": variance_question_candidates[:10],
         "supplementary_metric_snippets": supplementary_metric_snippets,
         "le_change_flags": le_change_flags,
         "supplementary_evidence_refs": supplementary_evidence_refs[:50],
-        "challenge_cards": challenge_cards[:5],
+        "challenge_cards": challenge_cards[: int(policy.get("card_rules", {}).get("max_cards", 5))],
         "narrative_signal_summary": narrative_signal_summary,
         "le_completeness_watchouts": le_completeness_watchouts,
         "quality_gate": quality_gate,

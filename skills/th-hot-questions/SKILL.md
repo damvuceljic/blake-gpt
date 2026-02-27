@@ -10,6 +10,7 @@ description: Generate concise CFO-level executive briefs from normalized monthly
 2. Run baseline analysis:
    - `python scripts/analyze/hot_questions.py --pack-dir data/normalized/<period>/<pack_type> --question "<question>"`
    - optional scoring config: `--scoring-config data/context/hot_questions_scoring.default.json`
+   - policy config (default): `--policy-config data/context/hot_questions_policy.default.json`
    - required for Blake-mode quality: `--use-llm-postprocess --require-llm-attempt --strict-narrative --challenge-card-mode`
    - optional historical calibration: `--use-historical-context` or `--historical-context <path>`
 3. Return challenge-card default format:
@@ -36,6 +37,14 @@ description: Generate concise CFO-level executive briefs from normalized monthly
 8. Each non-watchout card must include at least one narrative evidence reference from slide text blocks.
 9. Do not use bridge-only evidence for causal claims; bridge slides are numeric anchors only.
 10. If narrative support is weak or LLM postprocess fails, output deterministic cards with explicit downgrade warning.
+11. Enforce term guard and constructive tone:
+   - ban shorthand: `quality`, `core operating demand`, `elasticity risk`, `traffic/sales conversion`
+   - ban trust-attacking phrasing about LE integrity
+12. Enforce semantics:
+   - `preview == current LE`
+   - variance framing uses `vs Budget` and `vs prior LE`
+13. Every non-watchout card must include `citation_bundle` entries (`path`, `location`, `excerpt`).
+14. If fewer than 2 evidence-backed cards are supportable, return available cards with explicit insufficiency notice and no padding.
 
 ## Helper
 Run:

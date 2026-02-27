@@ -1,4 +1,4 @@
 interface:
   display_name: "TH Hot Questions"
   short_description: "Answer executive hot questions from pack data"
-  default_prompt: "Generate challenge-card hot questions with narrative evidence, Budget/LE-first framing, and prepared answers from latest normalized pack."
+  default_prompt: "Generate policy-hardened challenge cards with restaurant-first causality, preview==LE semantics, citation bundles, term-guard-safe language, and deterministic fallback when evidence is insufficient."

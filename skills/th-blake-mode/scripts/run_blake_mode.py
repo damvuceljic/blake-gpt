@@ -29,6 +29,11 @@ def main() -> int:
     )
     parser.add_argument("--allow-missing-core", action="store_true")
     parser.add_argument("--pair-choice-file", help="Optional JSON map for offline pair disambiguation")
+    parser.add_argument(
+        "--policy-config",
+        default="data/context/hot_questions_policy.default.json",
+        help="Hot questions policy config JSON for policy-aware defaults.",
+    )
     parser.add_argument("--use-llm-postprocess", action="store_true")
     parser.add_argument("--use-historical-context", action="store_true")
     parser.add_argument("--historical-context", help="Optional historical calibration bundle path")
@@ -56,6 +61,8 @@ def main() -> int:
         value = getattr(args, key)
         if value:
             command.extend([f"--{key.replace('_', '-')}", value])
+    if args.policy_config:
+        command.extend(["--policy-config", args.policy_config])
     if args.use_llm_postprocess:
         command.append("--use-llm-postprocess")
     if args.use_historical_context:

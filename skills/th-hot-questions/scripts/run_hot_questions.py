@@ -10,6 +10,11 @@ def main() -> int:
     parser.add_argument("--pack-dir", required=True, help="Normalized pack directory")
     parser.add_argument("--question", help="Optional executive question")
     parser.add_argument("--scoring-config", help="Optional scoring config JSON")
+    parser.add_argument(
+        "--policy-config",
+        default="data/context/hot_questions_policy.default.json",
+        help="Hot questions policy config JSON (default: data/context/hot_questions_policy.default.json)",
+    )
     parser.add_argument("--use-llm-postprocess", action="store_true")
     parser.add_argument("--require-llm-attempt", action="store_true")
     parser.add_argument("--strict-narrative", dest="strict_narrative", action="store_true", default=True)
@@ -26,6 +31,8 @@ def main() -> int:
         command.extend(["--question", args.question])
     if args.scoring_config:
         command.extend(["--scoring-config", args.scoring_config])
+    if args.policy_config:
+        command.extend(["--policy-config", args.policy_config])
     if args.use_llm_postprocess:
         command.append("--use-llm-postprocess")
     if args.require_llm_attempt:

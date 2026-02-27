@@ -157,3 +157,7 @@ def test_llm_failure_downgrades_quality_gate(tmp_path: Path, monkeypatch) -> Non
     payload = read_json(output)
     assert payload["quality_gate"]["status"] == "downgraded_llm"
     assert payload["warnings"]
+    assert payload["policy_version"]
+    assert isinstance(payload["term_guard_hits"], list)
+    assert isinstance(payload["scope_filters_applied"], list)
+    assert isinstance(payload["evidence_gap_registry"], list)

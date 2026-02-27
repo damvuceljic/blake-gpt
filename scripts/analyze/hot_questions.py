@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from finance_copilot.analysis import (
+    load_hotq_policy,
     load_hotq_scoring_config,
     persist_analysis,
     run_hot_questions,
@@ -30,6 +31,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scoring-config",
         help="Optional scoring config JSON. Defaults to data/context/hot_questions_scoring.default.json",
+    )
+    parser.add_argument(
+        "--policy-config",
+        help="Optional policy config JSON. Defaults to data/context/hot_questions_policy.default.json",
     )
     parser.add_argument(
         "--use-llm-postprocess",
@@ -194,8 +199,15 @@ def main() -> int:
             scoring_path = (root / scoring_path).resolve()
     else:
         scoring_path = root / "data" / "context" / "hot_questions_scoring.default.json"
+    if args.policy_config:
+        policy_path = Path(args.policy_config)
+        if not policy_path.is_absolute():
+            policy_path = (root / policy_path).resolve()
+    else:
+        policy_path = root / "data" / "context" / "hot_questions_policy.default.json"
 
     scoring_config = load_hotq_scoring_config(scoring_path if scoring_path.exists() else None)
+    policy_config = load_hotq_policy(policy_path if policy_path.exists() else None)
     month_override = _load_month_override(root, period)
     historical_context = None
     if args.historical_context:
@@ -213,6 +225,7 @@ def main() -> int:
         pack_dir=pack_dir,
         question=args.question,
         scoring_config=scoring_config,
+        policy_config=policy_config,
         month_override=month_override,
         historical_context=historical_context,
     )

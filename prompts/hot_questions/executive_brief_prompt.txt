@@ -5,6 +5,8 @@ Task:
 - Produce challenge-card-driven output, not a bridge recap.
 - Treat bridge slides as numeric anchors only; causal explanations must come from narrative slide text blocks when available.
 - Frame every challenge versus Budget or LE first, then use MoM/QoQ/YoY as supporting context.
+- Treat preview packs with semantic guard: preview equals current LE baseline; do not frame preview-vs-LE mismatch.
+- Keep causal framing restaurant-finance-first; do not make CPG/supply-chain primary unless directly quantified to restaurant outcomes.
 
 Required output:
 1. 3-5 executive bullets.
@@ -15,11 +17,13 @@ Required output:
 6. Challenge cards:
    - 5 cards total for close packs (2 C&US, 1 Canada, 1 US, 1 LE watchout).
    - Each card must include: metric, region, challenge question, prepared answer, why_now,
-     basis_summary, narrative evidence refs, supplementary evidence refs, confidence, verify_next.
+     basis_summary, narrative evidence refs, supplementary evidence refs, citation_bundle, confidence, verify_next.
 7. End with:
    - Is there any specific questions you'd like help coming up with an answer for?
 
 Rules:
 - Do not produce bridge-only causal explanations.
 - If narrative evidence is weak, explicitly call out uncertainty and provide a verify-next step.
+- Do not use trust-undermining framing (for example, "why should leadership trust this LE base now?").
+- Do not use banned shorthand terms: quality (causal shorthand), core operating demand, elasticity risk, traffic/sales conversion.
 - Keep language concise, CFO-ready, and evidence-backed.

@@ -1,4 +1,4 @@
 interface:
   display_name: "TH Blake Mode"
   short_description: "Chat-first router for monthly workflows"
-  default_prompt: "Route Blake requests with strict challenge-card hot-question behavior, LLM attempt policy, and narrative-evidence guardrails."
+  default_prompt: "Route Blake requests with policy-aware hot-question defaults, strict narrative/citation guardrails, preview==LE semantics, and deterministic fallback when LLM output is weak."

@@ -1,0 +1,114 @@
+{
+  "policy_version": "2026.02.phase1",
+  "term_guard": {
+    "allowlist": [
+      "data quality",
+      "quality check"
+    ],
+    "rewrite_mode": "deterministic",
+    "banned_terms": [
+      {
+        "id": "quality_family",
+        "pattern": "\\b(?:earnings|margin|le(?:\\s+base)?)\\s+quality\\b",
+        "rewrite": "documented variance drivers"
+      },
+      {
+        "id": "quality_shorthand",
+        "pattern": "\\bquality\\b",
+        "rewrite": "variance composition"
+      },
+      {
+        "id": "core_operating_demand",
+        "pattern": "\\bcore operating demand\\b",
+        "rewrite": "documented traffic and ticket drivers"
+      },
+      {
+        "id": "elasticity_risk",
+        "pattern": "\\belasticity risk\\b",
+        "rewrite": "price-volume response risk",
+        "allow_if_numeric": true
+      },
+      {
+        "id": "traffic_sales_conversion",
+        "pattern": "\\btraffic\\s*/\\s*sales\\s*conversion\\b",
+        "rewrite": "traffic-to-sales bridge"
+      },
+      {
+        "id": "trust_attack",
+        "pattern": "why should leadership trust this le base now\\??",
+        "rewrite": "what assumptions changed versus prior LE, who owns them, and what lock controls apply next cycle?"
+      }
+    ]
+  },
+  "scope_rules": {
+    "restaurant_first_required": true,
+    "exclude_cpg_primary_without_bridge": true,
+    "restaurant_tokens": [
+      "traffic",
+      "ticket",
+      "mix",
+      "pricing",
+      "labor",
+      "restaurant",
+      "franchise",
+      "sales",
+      "aoi",
+      "ebitda",
+      "sst",
+      "sss"
+    ],
+    "cpg_tokens": [
+      "cpg",
+      "consumer packaged",
+      "supply chain",
+      "distribution center",
+      "co-manufacturing",
+      "wholesale"
+    ],
+    "quantified_bridge_regex": "\\$?\\d[\\d,]*(?:\\.\\d+)?%?|\\b\\d+(?:\\.\\d+)?\\s*(?:mm|pp)\\b"
+  },
+  "semantics": {
+    "preview_equals_le": true,
+    "primary_bases": [
+      "vs Budget",
+      "vs LE"
+    ],
+    "le_change_label": "vs prior LE"
+  },
+  "card_rules": {
+    "min_cards": 2,
+    "target_cards": 5,
+    "max_cards": 5,
+    "strict_insufficiency_notice": true,
+    "do_not_pad_placeholders": true
+  },
+  "le_watchout_rules": {
+    "enabled": true,
+    "include_on_material_shift": true,
+    "include_on_completeness_gap": true,
+    "materiality": {
+      "currency_mm": 1.0,
+      "percent_pp": 0.5
+    }
+  },
+  "citation_rules": {
+    "required_fields": [
+      "path",
+      "location",
+      "excerpt"
+    ],
+    "max_citations_per_card": 4,
+    "excerpt_max_chars": 240
+  },
+  "supplementary_rules": {
+    "phase": "phase1",
+    "include_current_pack_workbooks": true,
+    "include_persistent_xlsx": true,
+    "persistent_root": "data/context/persistent",
+    "exclude_extensions": [
+      ".pdf"
+    ],
+    "analysis_row_limit": 2500,
+    "audit_min_score": 4
+  }
+}

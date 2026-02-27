@@ -58,6 +58,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--allow-missing-core", action="store_true")
     parser.add_argument("--pair-choice-file", help="JSON mapping pair_key to selected offline workbook.")
+    parser.add_argument(
+        "--policy-config",
+        default="data/context/hot_questions_policy.default.json",
+        help="Hot questions policy config path.",
+    )
     parser.add_argument("--use-llm-postprocess", action="store_true")
     parser.add_argument("--use-historical-context", action="store_true")
     parser.add_argument("--historical-context", help="Optional explicit historical calibration bundle path.")
@@ -297,6 +302,8 @@ def main() -> int:
         ]
         # Hot-question workflows enforce challenge-card + strict narrative mode with required LLM attempt.
         command.extend(["--challenge-card-mode", "--strict-narrative", "--require-llm-attempt"])
+        if args.policy_config:
+            command.extend(["--policy-config", args.policy_config])
         command.append("--use-llm-postprocess")
         if args.use_historical_context:
             command.append("--use-historical-context")

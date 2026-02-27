@@ -15,6 +15,10 @@ from finance_copilot.analysis import run_hot_questions
 from finance_copilot.common import repo_root, utc_now_iso, write_json
 
 NUMERIC_RE = re.compile(r"-?\$?\d[\d,]*(?:\.\d+)?(?:mm|pp|%)?", re.IGNORECASE)
+BANNED_TERM_RE = re.compile(
+    r"\b(?:quality|core operating demand|elasticity risk|traffic\s*/\s*sales\s*conversion)\b",
+    re.IGNORECASE,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -130,10 +134,32 @@ def _hard_checks(cards: list[dict[str, Any]]) -> dict[str, Any]:
         and card.get("narrative_block_classes")
         and all(cls in {"bridge_summary", "table_like"} for cls in card.get("narrative_block_classes", []))
     ]
+    citation_missing = [
+        card.get("metric", "")
+        for card in cards
+        if card.get("card_type") != "le_watchout"
+        and not any(
+            isinstance(citation, dict)
+            and str(citation.get("path", "")).strip()
+            and str(citation.get("location", "")).strip()
+            and str(citation.get("excerpt", "")).strip()
+            for citation in card.get("citation_bundle", [])
+        )
+    ]
+    banned_language = [
+        card.get("metric", "")
+        for card in cards
+        if card.get("card_type") != "le_watchout"
+        and BANNED_TERM_RE.search(
+            f"{card.get('challenge_question', '')} {card.get('prepared_answer', '')}"
+        )
+    ]
     return {
         "narrative_evidence_per_card": {"pass": not missing_narrative, "details": missing_narrative},
         "basis_delta_presence": {"pass": not missing_basis, "details": missing_basis},
         "no_bridge_only_causal_claim": {"pass": not bridge_only, "details": bridge_only},
+        "citation_bundle_per_card": {"pass": not citation_missing, "details": citation_missing},
+        "banned_language_absent": {"pass": not banned_language, "details": banned_language},
     }
 
 

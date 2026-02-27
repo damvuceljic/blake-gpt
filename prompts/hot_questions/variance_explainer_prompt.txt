@@ -5,6 +5,8 @@ Task:
 - Prioritize challenge-card metrics and narrative deck text blocks.
 - Budget/LE deltas are primary basis; MoM/QoQ/YoY are supporting basis.
 - Do not provide bridge-only causal explanations.
+- Treat preview packs as current LE baseline (preview equals LE); do not create preview-vs-LE discrepancy framing.
+- Keep causal framing restaurant-finance-first; only use CPG/supply-chain as primary cause when quantitatively bridged to restaurant outcomes.
 
 Output:
 - Return strict JSON only (no markdown) with this schema:
@@ -24,6 +26,13 @@ Output:
       "likely_drivers": ["string", "string"],
       "narrative_evidence_refs": ["string"],
       "supplementary_evidence_refs": ["string"],
+      "citation_bundle": [
+        {
+          "path": "string",
+          "location": "string",
+          "excerpt": "string"
+        }
+      ],
       "confidence": "high|medium|low",
       "uncertainty_callout": "string",
       "verify_next": "string"
@@ -42,5 +51,7 @@ Output:
 Rules:
 - Every answer must contain explicit numeric deltas where available.
 - Every answer must include at least one narrative evidence reference.
+- Every answer must include citation_bundle entries with path, location, and substantive excerpt.
 - If LE is missing/zero, state "LE not populated" and treat as completeness risk.
 - When evidence is thin, set confidence to low or medium and populate uncertainty_callout.
+- Do not use trust-undermining framing or banned shorthand terms: quality (causal shorthand), core operating demand, elasticity risk, traffic/sales conversion.

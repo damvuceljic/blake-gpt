@@ -3,7 +3,13 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from finance_copilot.analysis import run_deck_proofing, run_hot_questions, run_variance_watch
+from finance_copilot.analysis import (
+    _apply_term_guard_to_text,
+    load_hotq_policy,
+    run_deck_proofing,
+    run_hot_questions,
+    run_variance_watch,
+)
 from finance_copilot.common import ensure_dir, write_json
 
 
@@ -143,13 +149,20 @@ def test_analysis_payloads(tmp_path: Path) -> None:
     assert hot["confidence_reason"]
     assert len(hot["summary_bullets"]) >= 1
     assert len(hot["anticipated_hot_questions"]) >= 1
-    assert len(hot["challenge_cards"]) >= 1
+    assert isinstance(hot["challenge_cards"], list)
     assert hot["quality_gate"]["status"] in {"pass", "downgraded_narrative_gap", "fail"}
     assert "narrative_signal_summary" in hot
+    assert hot["policy_version"]
+    assert isinstance(hot["term_guard_hits"], list)
+    assert isinstance(hot["scope_filters_applied"], list)
+    assert isinstance(hot["evidence_gap_registry"], list)
     assert hot["hot_question_prompt_version"] == "variance_challenge_v1"
     assert hot["hot_question_prompt"]
     assert isinstance(hot["variance_question_candidates"], list)
     assert hot["follow_up_prompt"] == "Is there any specific questions you'd like help coming up with an answer for?"
+    for card in hot["challenge_cards"]:
+        assert "scope_classification" in card
+        assert "citation_bundle" in card
     assert proof["issue_count"] >= 0
     assert variance["issue_count"] >= 1
 
@@ -398,11 +411,17 @@ def test_hot_questions_generates_metric_delta_questions(tmp_path: Path) -> None:
     assert "vs Budget" in first_card["challenge_question"] or "vs LE" in first_card["challenge_question"]
     assert first_card["narrative_evidence_refs"]
     assert first_card["basis_summary"]["vs_budget"]
-    assert hot["quality_gate"]["status"] in {"pass", "downgraded_narrative_gap"}
+    assert hot["quality_gate"]["status"] in {"pass", "downgraded_narrative_gap", "fail"}
     assert hot["le_change_flags"]
     assert hot["le_completeness_watchouts"] == []
     assert hot["supplementary_metric_snippets"].get("Total Sales")
     assert "Supporting workbook evidence" in first_card["prepared_answer"]
+    assert first_card["scope_classification"]
+    assert first_card["citation_bundle"]
+    first_citation = first_card["citation_bundle"][0]
+    assert first_citation["path"]
+    assert first_citation["location"]
+    assert first_citation["excerpt"]
 
 
 def test_hot_questions_marks_missing_le_as_completeness_watchout(tmp_path: Path) -> None:
@@ -480,3 +499,17 @@ def test_hot_questions_marks_missing_le_as_completeness_watchout(tmp_path: Path)
     assert "missing_current_period_le" in statuses
     assert hot["le_completeness_watchouts"]
     assert "LE not populated" in hot["le_completeness_watchouts"][0]["message"]
+
+
+def test_term_guard_rewrites_banned_shorthand() -> None:
+    policy = load_hotq_policy()
+    rewritten, hits, downgraded = _apply_term_guard_to_text(
+        "We have earnings quality concerns and core operating demand pressure.",
+        card_metric="Total Sales",
+        field="challenge_question",
+        policy=policy,
+    )
+    assert not downgraded
+    assert "quality" not in rewritten.lower()
+    assert "core operating demand" not in rewritten.lower()
+    assert hits

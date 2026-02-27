@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -66,7 +67,7 @@ def _load_prompt(args: argparse.Namespace) -> str:
             input_path = (REPO_ROOT / input_path).resolve()
         context_payload = read_json(input_path)
         prompt_text += "\n\n<context_json>\n"
-        prompt_text += str(context_payload)
+        prompt_text += json.dumps(context_payload, ensure_ascii=False, indent=2)
         prompt_text += "\n</context_json>\n"
     return prompt_text
 
@@ -152,8 +153,16 @@ def main() -> int:
     if args.model:
         command.extend(["-m", args.model])
 
-    status = subprocess.run(command, input=prompt_text, text=True, capture_output=True, check=False)
-    response_text = temp_response.read_text(encoding="utf-8") if temp_response.exists() else ""
+    status = subprocess.run(
+        command,
+        input=prompt_text,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    response_text = temp_response.read_text(encoding="utf-8", errors="replace") if temp_response.exists() else ""
     payload = {
         "command": command,
         "returncode": status.returncode,

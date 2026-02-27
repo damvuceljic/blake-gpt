@@ -8,24 +8,25 @@ description: Chat-first workflow router for Blake. Use when user asks natural-la
 1. Read `GUARDRAILS.md`.
 2. Require Blake prompts to start with a `$` skill token.
 3. Prefer `$th-blake-mode` as Blake's default daily entry point.
-4. Route user prompts to one of these intents:
+4. Use policy-aware hot-question defaults via `data/context/hot_questions_policy.default.json`.
+5. Route user prompts to one of these intents:
    - ingest
    - hot questions
    - deck proofing
    - variance watch
    - compare prior month
-5. Use one command:
+6. Use one command:
    - `python scripts/chat/blake_mode.py --message "<user_prompt>"`
    - non-technical launcher: `python scripts/chat/blake_launcher.py`
-6. Return concise executive output only.
-7. Keep detailed command traces in `blake_mode_log.jsonl`.
+7. Return concise executive output only.
+8. Keep detailed command traces in `blake_mode_log.jsonl`.
 
 ## Routing Rules
 1. Prompt contains ingest/intake/new files:
    - run end-to-end monthly processing (`process_month.py`).
 2. Prompt contains hot questions/top risks/executive brief:
    - run `scripts/analyze/hot_questions.py` in challenge-card mode:
-   - `--challenge-card-mode --strict-narrative --require-llm-attempt --use-llm-postprocess`
+   - `--challenge-card-mode --strict-narrative --require-llm-attempt --use-llm-postprocess --policy-config data/context/hot_questions_policy.default.json`
 3. Prompt contains proof/proofing/review deck:
    - run `scripts/analyze/deck_proofing.py`.
 4. Prompt contains variance/bridge/reconcile:
@@ -43,6 +44,9 @@ description: Chat-first workflow router for Blake. Use when user asks natural-la
    - at least one narrative evidence ref per non-watchout card
    - no bridge-only causal claims
    - explicit downgrade warning when LLM explainer is unavailable
+   - preview semantic guard (`preview == LE`)
+   - term guard + constructive LE framing
+   - citation bundle completeness on returned cards
 
 ## Helper
 Run:
