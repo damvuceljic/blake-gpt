@@ -1,4 +1,0 @@
-interface:
-  display_name: "TH Repo Guardrails"
-  short_description: "Enforce portable repo guardrails and policy"
-  default_prompt: "Read GUARDRAILS.md first, then enforce portability, governance, and concise CFO-facing outputs."

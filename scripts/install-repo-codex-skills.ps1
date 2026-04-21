@@ -40,13 +40,13 @@ $availableSkills = Get-ChildItem -LiteralPath $SkillsRoot -Directory |
     Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'SKILL.md') } |
     Sort-Object Name
 
-if (!$All -and (!$SkillName -or $SkillName.Count -eq 0)) {
-    $All = $true
-}
-
 if ($All) {
     $skillsToInstall = $availableSkills
 } else {
+    if (!$SkillName -or $SkillName.Count -eq 0) {
+        $availableList = $availableSkills.Name -join ', '
+        throw "Specify -SkillName <name> for ad hoc install or pass -All to install everything. Available skills: $availableList"
+    }
     $skillsToInstall = @()
     foreach ($name in $SkillName) {
         $match = $availableSkills | Where-Object { $_.Name -eq $name } | Select-Object -First 1
